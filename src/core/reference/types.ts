@@ -1,0 +1,55 @@
+// The versioned, serializable record produced from a tutorial video and persisted to
+// IndexedDB. Bumping REFERENCE_VERSION lets future loaders migrate old saved dances
+// instead of breaking on them — part of keeping the foundation stable over time.
+
+import type { Landmark } from '../pose/types'
+import type { Tempo, Section } from '../audio/beats'
+
+export const REFERENCE_VERSION = 1 as const
+
+/** One sampled frame of the reference performance. */
+export interface ReferenceFrame {
+  /** Seconds from start of video. */
+  t: number
+  /** 33 world landmarks. Used for the synthetic ghost and angle math. */
+  world: Landmark[]
+  /** 33 image-space landmarks (0..1 of the video frame) for drawing the skeleton
+   *  aligned on top of the real instructor video. Absent for the synthetic demo. */
+  image?: Landmark[]
+  /** Precomputed joint-angle vector (degrees), in JOINT_ORDER. */
+  angles: number[]
+  /** Per-joint visibility 0..1, in JOINT_ORDER (for weighting comparisons). */
+  visibility: number[]
+}
+
+export interface ReferenceSource {
+  type: 'upload' | 'bundled'
+  durationSec: number
+  /** Effective sampling rate the frames were extracted at. */
+  fps: number
+}
+
+export interface ReferenceTrack {
+  version: typeof REFERENCE_VERSION
+  id: string
+  name: string
+  /** Epoch millis. Passed in (not generated) so the core stays deterministic/testable. */
+  createdAt: number
+  source: ReferenceSource
+  /** Key of the original video Blob stored separately in IndexedDB (null for fixtures). */
+  videoBlobKey: string | null
+  tempo: Tempo
+  frames: ReferenceFrame[]
+  sections: Section[]
+}
+
+/** Per-dance learning progress, persisted alongside the track. */
+export interface DanceProgress {
+  trackId: string
+  /** Best section score 0..100, keyed by section index. */
+  bestSectionScores: Record<number, number>
+  /** Highest section index unlocked (0-based). Section 0 is always unlocked. */
+  unlockedThrough: number
+  /** Best full-run score 0..100, if attempted. */
+  bestFullRun?: number
+}
