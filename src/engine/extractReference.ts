@@ -25,6 +25,8 @@ export interface ExtractArgs {
   sampleFps?: number
   /** Hard cap on sampled frames to keep long clips from hanging. Default 720. */
   maxFrames?: number
+  /** Playback-only: skip pose extraction entirely (fast import, no coaching/scoring). */
+  skipPose?: boolean
   onProgress?: (p: ExtractProgress) => void
 }
 
@@ -50,11 +52,12 @@ function seekTo(video: HTMLVideoElement, t: number): Promise<void> {
   const target = Math.min(t, Math.max(0, (video.duration || 0) - 0.001))
   return new Promise((resolve) => {
     let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
     const finish = () => {
       if (settled) return
       settled = true
       video.removeEventListener('seeked', onSeeked)
-      clearTimeout(timer)
+      if (timer !== undefined) clearTimeout(timer)
       // Give the compositor a tick so the frame is actually painted before detect().
       requestAnimationFrame(() => resolve())
     }
@@ -68,7 +71,7 @@ function seekTo(video: HTMLVideoElement, t: number): Promise<void> {
     }
     video.addEventListener('seeked', onSeeked)
     // Safety net: never block the whole extraction on a single stubborn seek.
-    const timer = setTimeout(finish, 1500)
+    timer = setTimeout(finish, 1500)
     video.currentTime = target
   })
 }
@@ -94,9 +97,10 @@ async function detectTempo(file: Blob, onProgress?: (p: ExtractProgress) => void
 export async function extractReferenceFromVideo(args: ExtractArgs): Promise<ExtractResult> {
   const sampleFps = args.sampleFps ?? 12
   const maxFrames = args.maxFrames ?? 720
+  const skipPose = args.skipPose ?? false
   const onProgress = args.onProgress
 
-  await args.provider.init()
+  if (!skipPose) await args.provider.init()
 
   onProgress?.({ phase: 'loading', ratio: 0, message: 'Loading video…' })
   const url = URL.createObjectURL(args.file)
@@ -106,28 +110,29 @@ export async function extractReferenceFromVideo(args: ExtractArgs): Promise<Extr
 
     const tempo = await detectTempo(args.file, onProgress)
 
-    // Sample frames.
-    const count = Math.min(maxFrames, Math.max(2, Math.floor(durationSec * sampleFps)))
+    // Sample frames (skipped entirely in playback-only mode).
     const rawFrames: RawFrame[] = []
-    for (let i = 0; i < count; i++) {
-      const t = (i / (count - 1)) * Math.max(0, durationSec - 0.05)
-      await seekTo(video, t)
-      const res = await args.provider.detectImage(video)
-      if (res) rawFrames.push({ t, world: res.world, image: res.image })
-      onProgress?.({
-        phase: 'pose',
-        ratio: (i + 1) / count,
-        message: `Tracking movement… ${Math.round(((i + 1) / count) * 100)}%`,
-      })
-      // Yield to the event loop so the progress UI can paint.
-      if (i % 4 === 0) await new Promise((r) => setTimeout(r, 0))
+    if (!skipPose) {
+      const count = Math.min(maxFrames, Math.max(2, Math.floor(durationSec * sampleFps)))
+      for (let i = 0; i < count; i++) {
+        const t = (i / (count - 1)) * Math.max(0, durationSec - 0.05)
+        await seekTo(video, t)
+        const res = await args.provider.detectImage(video)
+        if (res) rawFrames.push({ t, world: res.world, image: res.image })
+        onProgress?.({
+          phase: 'pose',
+          ratio: (i + 1) / count,
+          message: `Tracking movement… ${Math.round(((i + 1) / count) * 100)}%`,
+        })
+        // Yield to the event loop so the progress UI can paint.
+        if (i % 4 === 0) await new Promise((r) => setTimeout(r, 0))
+      }
+      if (rawFrames.length < 2) {
+        throw new Error('No body detected in this video. Try a clearer, well-lit clip with a full-body shot.')
+      }
     }
 
     onProgress?.({ phase: 'building', ratio: 0.9, message: 'Building your lesson…' })
-
-    if (rawFrames.length < 2) {
-      throw new Error('No body detected in this video. Try a clearer, well-lit clip with a full-body shot.')
-    }
 
     const videoBlobKey = crypto.randomUUID()
     const track = buildReferenceTrack({

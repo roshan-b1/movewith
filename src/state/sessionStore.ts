@@ -32,7 +32,7 @@ export interface SessionState {
 
   init: () => Promise<void>
   openTrack: (id: string) => Promise<void>
-  importVideo: (file: File, name: string) => Promise<void>
+  importVideo: (file: File, name: string, playbackOnly?: boolean) => Promise<void>
   removeTrack: (id: string) => Promise<void>
   updateProgress: (next: DanceProgress) => Promise<void>
   back: () => void
@@ -87,7 +87,7 @@ export const useSession = create<SessionState>((set, get) => ({
     }
   },
 
-  async importVideo(file, name) {
+  async importVideo(file, name, playbackOnly = false) {
     set({ status: 'extracting', error: null, extract: { phase: 'loading', ratio: 0, message: 'Starting…' } })
     try {
       const { track, videoBlob } = await extractReferenceFromVideo({
@@ -95,6 +95,7 @@ export const useSession = create<SessionState>((set, get) => ({
         name,
         provider: await getPoseProvider(),
         createdAt: Date.now(),
+        skipPose: playbackOnly,
         onProgress: (p) => set({ extract: p }),
       })
       if (track.videoBlobKey) await saveVideo(track.videoBlobKey, videoBlob)

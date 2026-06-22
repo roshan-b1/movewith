@@ -1,312 +1,371 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSession } from '../../state/sessionStore'
 import { PlaybackController } from '../../engine/playback'
 import { PracticeEngine, type ReferenceContext } from '../../engine/practiceEngine'
-import { startCamera, type CameraHandle } from '../../engine/camera'
-import { VoiceController, type VoiceCommand } from '../../engine/voice'
+import { startCamera, listVideoInputs, preferredCameraId, type CameraHandle } from '../../engine/camera'
 import { getPoseProvider } from '../../providers/instance'
 import { anglesAt, sectionAngles, nearestFrameIndex } from '../../core/reference/build'
 import { scoreSection, type SectionScore } from '../../core/compare/score'
 import { STRICT, LOOSE, type ScoreConfig, type Limb } from '../../core/compare/similarity'
-import { drawSkeleton, worldProjector } from '../components/drawSkeleton'
+import type { Section } from '../../core/audio/beats'
+import {
+  type Move,
+  buildMovesFromBounds,
+  evenMoveBounds,
+  autoMoveBounds,
+} from '../../core/reference/segment'
+import { VoiceController, type VoiceCommand } from '../../engine/voice'
+import { drawSkeleton, drawHumanFigure, worldProjector, containProjector } from '../components/drawSkeleton'
 import { AccuracyMeter } from '../components/AccuracyMeter'
-import { SectionTimeline } from '../components/SectionTimeline'
-import { Controls } from '../components/Controls'
-import type { ReferenceTrack, DanceProgress } from '../../core/reference/types'
+import { Scrubber } from '../components/Scrubber'
+import { MoveEditor } from '../components/MoveEditor'
+import { SegmentBar } from '../components/SegmentBar'
+import type { ReferenceTrack } from '../../core/reference/types'
 
 const PASS_THRESHOLD = 75
 const RATE_STEPS = [0.5, 0.75, 1]
-
-const VOICE_LABEL: Record<VoiceCommand, string> = {
-  play: 'Play',
-  pause: 'Pause',
-  restart: 'Rewind',
-  slower: 'Slower',
-  faster: 'Faster',
-  normalSpeed: 'Full speed',
-  toggleLoop: 'Loop',
-  toggleMirror: 'Mirror',
-  next: 'Next 8-count',
-  prev: 'Previous 8-count',
-  toggleSkeleton: 'Skeleton',
-}
-
-function stepRate(current: number, dir: 1 | -1): number {
-  const idx = RATE_STEPS.indexOf(current)
-  const base = idx === -1 ? RATE_STEPS.length - 1 : idx
-  return RATE_STEPS[Math.min(RATE_STEPS.length - 1, Math.max(0, base + dir))]!
-}
-
 const LIMB_TIP: Record<Limb, string> = {
-  leftArm: 'Sharpen your left arm',
-  rightArm: 'Sharpen your right arm',
-  leftLeg: 'Watch your left leg',
-  rightLeg: 'Watch your right leg',
-  torso: 'Keep your torso aligned',
+  leftArm: 'Sharpen your left arm', rightArm: 'Sharpen your right arm',
+  leftLeg: 'Watch your left leg', rightLeg: 'Watch your right leg', torso: 'Keep your torso aligned',
 }
-
-/** Project image-space landmarks (0..1 of the video frame) onto a canvas that overlays
- *  an `object-contain` video, accounting for the letterbox bars so the skeleton lines
- *  up with the dancer regardless of the clip's aspect ratio. */
-function containProjector(videoW: number, videoH: number) {
-  return (lm: { x: number; y: number }, w: number, h: number) => {
-    if (!videoW || !videoH) return { x: lm.x * w, y: lm.y * h }
-    const videoAspect = videoW / videoH
-    const boxAspect = w / h
-    let dispW: number
-    let dispH: number
-    let offX: number
-    let offY: number
-    if (videoAspect > boxAspect) {
-      dispW = w
-      dispH = w / videoAspect
-      offX = 0
-      offY = (h - dispH) / 2
-    } else {
-      dispH = h
-      dispW = h * videoAspect
-      offY = 0
-      offX = (w - dispW) / 2
-    }
-    return { x: offX + lm.x * dispW, y: offY + lm.y * dispH }
-  }
+const VOICE_LABEL: Record<VoiceCommand, string> = {
+  play: 'Play', pause: 'Pause', restart: 'Restart', slower: 'Slower', faster: 'Faster',
+  normalSpeed: 'Full speed', toggleLoop: 'Loop', toggleMirror: 'Mirror', next: 'Next', prev: 'Previous', toggleSkeleton: 'Skeleton',
 }
-
-/** Match a canvas's backing store to its displayed size. Called only on resize (via a
- *  ResizeObserver) — never inside the draw loop, to avoid per-frame layout reads. */
+function stepRate(cur: number, dir: 1 | -1) {
+  const i = RATE_STEPS.indexOf(cur)
+  const b = i === -1 ? RATE_STEPS.length - 1 : i
+  return RATE_STEPS[Math.min(RATE_STEPS.length - 1, Math.max(0, b + dir))]!
+}
 function sizeCanvas(c: HTMLCanvasElement) {
-  const rect = c.getBoundingClientRect()
-  const w = Math.max(2, Math.round(rect.width))
-  const h = Math.max(2, Math.round(rect.height))
-  if (c.width !== w || c.height !== h) {
-    c.width = w
-    c.height = h
-  }
+  const r = c.getBoundingClientRect()
+  const w = Math.max(2, Math.round(r.width))
+  const h = Math.max(2, Math.round(r.height))
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h }
+}
+// Move size choices: the target length per chunk that auto-detection aims for. Each chunk
+// then ends on the nearest pause/hold in the dance, so it stops between steps not mid-move.
+const MOVE_SIZES = [
+  { label: '~5s', sec: 5 },
+  { label: '~8s', sec: 8 },
+  { label: '~10s', sec: 10 },
+] as const
+
+// Move boundaries as tick marks for the scrubber.
+function moveTicks(moves: Move[]): Section[] {
+  return moves.map((m) => ({ index: m.index, label: '', startSec: m.startSec, endSec: m.endSec, startBeat: 0 }))
 }
 
 export function Practice() {
   const track = useSession((s) => s.activeTrack)!
   const videoUrl = useSession((s) => s.activeVideoUrl)
-  const progress = useSession((s) => s.progress)
-  const updateProgress = useSession((s) => s.updateProgress)
   const back = useSession((s) => s.back)
+  const updateProgress = useSession((s) => s.updateProgress)
 
-  // React UI state.
+  const duration = track.source.durationSec
+  const playbackOnly = track.frames.length === 0
+
+  // Restore the dancer's saved trim + segments + settings for this track, if any.
+  const savedSetup = useSession.getState().progress?.setup
+
+  // ---- setup choices (made before practice) ----
+  const [phase, setPhase] = useState<'setup' | 'bounds' | 'go'>('setup')
+  const [moveSec, setMoveSec] = useState<number>(savedSetup?.moveSec ?? 8)
+  const [reps, setReps] = useState<number>(savedSetup?.reps ?? Infinity)
+  const [breakSecs, setBreakSecs] = useState<number>(savedSetup?.breakSecs ?? 3)
+  const [cameraOn, setCameraOn] = useState(savedSetup?.cameraOn ?? false)
+  const scoring = cameraOn && !playbackOnly && phase === 'go'
+  const [completed, setCompleted] = useState<number[]>([])
+  const [skip, setSkip] = useState<number[]>(savedSetup?.skip ?? [])
+  const [countdown, setCountdown] = useState(0)
+  const [countdownLabel, setCountdownLabel] = useState('Replaying in')
+
+  // ---- runtime ----
+  const [trimStart, setTrimStart] = useState(savedSetup?.trimStart ?? 0)
+  const [trimEnd, setTrimEnd] = useState(savedSetup?.trimEnd ?? duration)
+  // Internal cut times between segments. Restored from save, else placed by the user.
+  const [moveBounds, setMoveBounds] = useState<number[]>(savedSetup?.moveBounds ?? [])
+  const [moveIdx, setMoveIdx] = useState(0)
+  const [fullRun, setFullRun] = useState(false)
   const [playing, setPlaying] = useState(false)
   const [rate, setRate] = useState(1)
   const [mirror, setMirror] = useState(false)
-  const [looping, setLooping] = useState(true)
-  const [activeIndex, setActiveIndex] = useState(0)
+  const [previewIdx, setPreviewIdx] = useState(-1) // segment being loop-previewed in the editor
+  const [creating, setCreating] = useState(false) // segment-creator mode (tap to place cuts)
   const [meter, setMeter] = useState(0)
   const [camStatus, setCamStatus] = useState<'init' | 'ready' | 'error'>('init')
   const [camError, setCamError] = useState<string | null>(null)
+  const [noBody, setNoBody] = useState(false)
   const [lastTake, setLastTake] = useState<SectionScore | null>(null)
   const [toast, setToast] = useState<string | null>(null)
-  const [count, setCount] = useState(0)
-  const [noBody, setNoBody] = useState(false)
-  // Draw the tracked skeleton on top of the real instructor video (uploads only).
-  const [showSkeleton, setShowSkeleton] = useState(true)
-  // Voice control.
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([])
+  const [activeCam, setActiveCam] = useState<string | null>(null)
   const [voiceOn, setVoiceOn] = useState(false)
-  const [voiceStatus, setVoiceStatus] = useState<'listening' | 'stopped' | 'error'>('stopped')
-  const [voiceErr, setVoiceErr] = useState<string | null>(null)
   const voiceSupported = useMemo(() => VoiceController.isSupported(), [])
-  const voiceHandlerRef = useRef<(cmd: VoiceCommand) => void>(() => {})
 
-  // Imperative refs (read inside rAF callbacks without re-subscribing).
-  const instructorVideoRef = useRef<HTMLVideoElement>(null)
+  const moves = useMemo(() => buildMovesFromBounds(trimStart, trimEnd, moveBounds), [trimStart, trimEnd, moveBounds])
+  const ticks = useMemo(() => moveTicks(moves), [moves])
+
+  // refs
+  const instructorVideoRef = useRef<HTMLVideoElement | null>(null)
   const instructorCanvasRef = useRef<HTMLCanvasElement>(null)
   const instructorOverlayRef = useRef<HTMLCanvasElement>(null)
+  // Driven imperatively from the playback tick so the whole screen doesn't re-render 60×/s.
+  const scrubPlayheadRef = useRef<HTMLDivElement>(null)
+  const moveEditorPlayheadRef = useRef<HTMLDivElement>(null)
+  const phaseRef = useRef(phase)
   const webcamVideoRef = useRef<HTMLVideoElement>(null)
   const webcamCanvasRef = useRef<HTMLCanvasElement>(null)
-
   const playbackRef = useRef<PlaybackController | null>(null)
   const engineRef = useRef<PracticeEngine | null>(null)
+  const camRef = useRef<CameraHandle | null>(null)
   const trackRef = useRef<ReferenceTrack>(track)
-  const progressRef = useRef<DanceProgress | null>(progress)
   const mirrorRef = useRef(mirror)
-  const loopingRef = useRef(looping)
-  const activeIndexRef = useRef(activeIndex)
+  const movesRef = useRef<Move[]>(moves)
+  const moveIdxRef = useRef(0)
+  const trimStartRef = useRef(0)
+  const trimEndRef = useRef(duration)
+  const creatingRef = useRef(false)
+  const fullRunRef = useRef(false)
+  const segmentBeforeFullRef = useRef(0)
+  const skipRef = useRef<number[]>(skip)
+  const loopStartRef = useRef(0)
+  const loopEndRef = useRef(duration)
   const cfgRef = useRef<ScoreConfig>(STRICT)
   const prevTimeRef = useRef(0)
+  const lastSeekMsRef = useRef(0)
+  const awaitingSeekRef = useRef<number | null>(null)
   const meterThrottleRef = useRef(0)
-  const countRef = useRef(0)
   const lastBodyMsRef = useRef(0)
   const noBodyShownRef = useRef(false)
-  const showSkeletonRef = useRef(showSkeleton)
+  const repCounterRef = useRef(0)
+  const repsRef = useRef(reps)
+  const breakRef = useRef(breakSecs)
+  const rateRef = useRef(rate)
+  const scoringRef = useRef(scoring)
+  const completedRef = useRef<number[]>([])
+  const countdownTimerRef = useRef<number | null>(null)
+  const voiceHandlerRef = useRef<(c: VoiceCommand) => void>(() => {})
+  useEffect(() => void (completedRef.current = completed), [completed])
+
+  useEffect(() => void (trackRef.current = track), [track])
   useEffect(() => {
-    showSkeletonRef.current = showSkeleton
-    // Force one redraw so toggling updates immediately even while paused.
+    mirrorRef.current = mirror
+    // Force an instructor redraw so the flip shows immediately, even while paused.
     const pb = playbackRef.current
     if (pb) pb.seek(pb.getTime())
-  }, [showSkeleton])
-
-  // Keep refs in sync with state/props.
-  useEffect(() => void (trackRef.current = track), [track])
-  useEffect(() => void (progressRef.current = progress), [progress])
-  useEffect(() => void (mirrorRef.current = mirror), [mirror])
-  useEffect(() => void (loopingRef.current = looping), [looping])
-  useEffect(() => void (activeIndexRef.current = activeIndex), [activeIndex])
-
-  // Difficulty: slow practice is forgiving, full speed is strict (per the plan).
+  }, [mirror])
+  useEffect(() => void (phaseRef.current = phase), [phase])
+  useEffect(() => { trimStartRef.current = trimStart; trimEndRef.current = trimEnd }, [trimStart, trimEnd])
+  // Keep skip state + the controller's skip ranges (for full-song playback) in sync.
   useEffect(() => {
+    skipRef.current = skip
+    const ranges = moves.filter((m) => skip.includes(m.index)).map((m) => [m.startSec, m.endSec] as [number, number])
+    playbackRef.current?.setSkipRanges(ranges)
+  }, [skip, moves])
+
+  // Persist the dancer's trim + segments + settings for this track (debounced) so they're
+  // restored on next open. Skips the very first render (nothing changed yet).
+  const didMountRef = useRef(false)
+  useEffect(() => {
+    if (!didMountRef.current) { didMountRef.current = true; return }
+    const id = window.setTimeout(() => {
+      const cur = useSession.getState().progress
+      const base = cur ?? { trackId: track.id, bestSectionScores: {}, unlockedThrough: 0 }
+      void updateProgress({ ...base, setup: { trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, cameraOn, skip } })
+    }, 500)
+    return () => window.clearTimeout(id)
+  }, [trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, cameraOn, skip, track.id, updateProgress])
+  useEffect(() => void (creatingRef.current = creating), [creating])
+  useEffect(() => void (movesRef.current = moves), [moves])
+  useEffect(() => void (moveIdxRef.current = moveIdx), [moveIdx])
+  useEffect(() => void (repsRef.current = reps), [reps])
+  useEffect(() => void (breakRef.current = breakSecs), [breakSecs])
+  useEffect(() => void (scoringRef.current = scoring), [scoring])
+  useEffect(() => {
+    rateRef.current = rate
     const cfg = rate < 1 ? LOOSE : STRICT
     cfgRef.current = cfg
     engineRef.current?.setConfig(cfg)
   }, [rate])
 
-  // ---- Setup: playback controller + instructor drawing loop (runs once per track) ----
+  // Playback + instructor draw loop
   useEffect(() => {
-    const pb = new PlaybackController(track.source.durationSec)
+    const pb = new PlaybackController(duration)
     pb.attachVideo(videoUrl ? instructorVideoRef.current : null)
     playbackRef.current = pb
-
-    // Start on the first section, looping it.
-    const first = track.sections[0]
-    if (first) pb.setLoop({ startSec: first.startSec, endSec: first.endSec })
+    pb.setLoop({ startSec: 0, endSec: duration })
+    // Seed skip ranges from restored state (the skip-sync effect runs before this on mount).
+    pb.setSkipRanges(movesRef.current.filter((m) => skipRef.current.includes(m.index)).map((m) => [m.startSec, m.endSec] as [number, number]))
+    // Keep the play/pause button in sync with what the video actually does (autoplay
+    // can be blocked, which would otherwise leave the button stuck showing "Pause").
+    const unsubPlay = pb.onPlayingChange((p) => setPlaying(p))
 
     let lastDrawMs = 0
     const drawInstructor = (t: number) => {
-      // The reference only changes at the source fps, so ~30fps redraw is plenty.
       const now = performance.now()
       if (now - lastDrawMs < 33) return
       lastDrawMs = now
-
       const i = nearestFrameIndex(track.frames, t)
       const frame = i >= 0 ? track.frames[i] : null
-
       if (videoUrl) {
-        // Real video instructor: draw the tracked skeleton on top, aligned to the video.
         const canvas = instructorOverlayRef.current
         const video = instructorVideoRef.current
         if (!canvas) return
         const ctx = canvas.getContext('2d')
         if (!ctx) return
-        if (!showSkeletonRef.current || !frame?.image) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height)
-          return
+        const w = canvas.width, h = canvas.height
+        const mir = mirrorRef.current
+        const vw = video?.videoWidth ?? 0
+        const vh = video?.videoHeight ?? 0
+        ctx.clearRect(0, 0, w, h)
+        ctx.save()
+        if (mir) { ctx.translate(w, 0); ctx.scale(-1, 1) }
+        // When mirrored, paint the (flipped) video onto the canvas — we never CSS-transform
+        // the <video> element itself, which is what tore into a split-screen on Windows.
+        if (mir && video && vw && vh) {
+          const va = vw / vh, ba = w / h
+          let dw: number, dh: number, ox: number, oy: number
+          if (va > ba) { dw = w; dh = w / va; ox = 0; oy = (h - dh) / 2 }
+          else { dh = h; dw = h * va; oy = 0; ox = (w - dw) / 2 }
+          try { ctx.drawImage(video, ox, oy, dw, dh) } catch { /* not ready yet */ }
         }
-        drawSkeleton(ctx, frame.image, {
-          project: containProjector(video?.videoWidth ?? 0, video?.videoHeight ?? 0),
-          baseColor: 'rgba(155,140,255,0.92)',
-          lineWidth: Math.max(2.5, canvas.width * 0.005),
-          jointRadius: Math.max(2.5, canvas.width * 0.005),
-        })
+        if (frame?.image) {
+          drawSkeleton(ctx, frame.image, {
+            project: containProjector(vw, vh),
+            baseColor: 'rgba(34,211,238,0.95)',
+            lineWidth: Math.max(2.5, w * 0.005),
+            jointRadius: Math.max(2.5, w * 0.005),
+          })
+        }
+        ctx.restore()
       } else {
-        // Synthetic demo: the stick-figure ghost from world landmarks.
         const canvas = instructorCanvasRef.current
         if (!canvas) return
         const ctx = canvas.getContext('2d')
         if (!ctx) return
-        drawSkeleton(ctx, frame ? frame.world : null, {
-          project: worldProjector,
-          baseColor: '#9b8cff',
-          lineWidth: Math.max(4, canvas.width * 0.008),
-        })
+        ctx.save()
+        if (mirrorRef.current) { ctx.translate(canvas.width, 0); ctx.scale(-1, 1) }
+        drawHumanFigure(ctx, frame ? frame.world : null, { project: worldProjector })
+        ctx.restore()
       }
     }
 
+    let lastHeadMs = 0
     const unsub = pb.onTick((t) => {
       drawInstructor(t)
-
-      // Live 8-count: which beat (1..8) of the active section are we on?
-      const section = track.sections[activeIndexRef.current]
-      let c = 0
-      const bi = track.tempo.beatIntervalSec
-      if (section && bi > 0 && t >= section.startSec) {
-        c = (Math.floor((t - section.startSec) / bi) % 8) + 1
+      const now = performance.now()
+      // Move the playheads by touching the DOM directly (cheap) instead of setState
+      // (which would re-render the whole Practice tree every frame = the lag).
+      if (now - lastHeadMs > 33) {
+        lastHeadMs = now
+        const sc = scrubPlayheadRef.current
+        if (sc) sc.style.left = `${duration > 0 ? Math.min(100, Math.max(0, (t / duration) * 100)) : 0}%`
+        const me = moveEditorPlayheadRef.current
+        if (me) {
+          const sp = Math.max(0.001, trimEndRef.current - trimStartRef.current)
+          me.style.left = `${Math.min(100, Math.max(0, ((t - trimStartRef.current) / sp) * 100))}%`
+        }
       }
-      if (c !== countRef.current) {
-        countRef.current = c
-        setCount(c)
-      }
 
-      // Loop-wrap detection -> grade the take that just finished.
       const prev = prevTimeRef.current
       prevTimeRef.current = t
-      if (loopingRef.current && prev > t + 0.08) {
-        gradeActiveSection()
+      // After a deliberate seek (Repeat, tapping a segment, scrubbing) the real <video> seek
+      // is async and reads stale positions, so the time jumps backward — which would look
+      // like a loop wrap and falsely fire the break while it's actually playing. Suppress
+      // wrap detection until the playhead actually reaches the seek target (or 1.5s fallback).
+      const seekTarget = awaitingSeekRef.current
+      if (seekTarget !== null) {
+        if (Math.abs(t - seekTarget) < 0.35 || now - lastSeekMsRef.current > 1500) awaitingSeekRef.current = null
+      } else if (prev > t + 0.08 && phaseRef.current === 'go' && !fullRunRef.current) {
+        if (scoringRef.current) gradeLoop()
+        repCounterRef.current += 1
+        const reachedLimit = repsRef.current !== Infinity && repCounterRef.current >= repsRef.current
+        pb.pause()
+        if (reachedLimit) {
+          repCounterRef.current = 0
+          flashToast('Done · ✓ got it, or ↻ repeat')
+        } else {
+          // Wait the break, then resume from the loop start (already there — no re-seek,
+          // which could otherwise interrupt play() and leave it stuck paused).
+          runCountdown(() => {
+            const p = playbackRef.current
+            if (!p) return
+            prevTimeRef.current = loopStartRef.current
+            engineRef.current?.startRecording()
+            p.play()
+          })
+        }
+      } else if (prev > t + 0.08 && phaseRef.current === 'go' && fullRunRef.current && scoringRef.current) {
+        gradeLoop()
       }
     })
 
     drawInstructor(pb.getTime())
-    return () => {
-      unsub()
-      pb.dispose()
-      playbackRef.current = null
-    }
+    return () => { unsub(); unsubPlay(); pb.dispose(); playbackRef.current = null }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [track.id, videoUrl])
 
-  // ---- Setup: camera + pose engine + live overlay (runs once per track) ----
+  // Attach the <video> to the playback controller the moment it mounts (it doesn't exist
+  // on the setup screen). Without this the controller stays in virtual mode and the real
+  // video never plays. Stable callback so React doesn't detach/reattach every render.
+  const attachInstructorVideo = useCallback((el: HTMLVideoElement | null) => {
+    instructorVideoRef.current = el
+    if (el && playbackRef.current) {
+      playbackRef.current.attachVideo(el)
+      playbackRef.current.setRate(rateRef.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Camera (+ engine when scoring), once started
   useEffect(() => {
+    if (!cameraOn || phase !== 'go') return
     let cam: CameraHandle | null = null
     let disposed = false
-
     const getReference = (): ReferenceContext => {
       const pb = playbackRef.current
-      const tr = trackRef.current
       if (!pb) return { angles: null, mirror: mirrorRef.current }
-      return { angles: anglesAt(tr, pb.getTime()), mirror: mirrorRef.current }
+      return { angles: anglesAt(trackRef.current, pb.getTime()), mirror: mirrorRef.current }
     }
-
+    setCamStatus('init')
     ;(async () => {
       try {
         const webcam = webcamVideoRef.current
         if (!webcam) return
-        cam = await startCamera(webcam)
-        // If we were torn down while awaiting (StrictMode/fast nav), stop the stream
-        // we just opened — otherwise the camera light stays on after leaving.
-        if (disposed) {
-          cam.stop()
-          return
+        const saved = localStorage.getItem('movewith.cameraId') || undefined
+        try { cam = await startCamera(webcam, saved) } catch { cam = await startCamera(webcam) }
+        if (disposed) return cam.stop()
+        camRef.current = cam
+        setActiveCam(cam.deviceId)
+        const inputs = await listVideoInputs()
+        if (!disposed) {
+          setCameras(inputs)
+          if (!saved) {
+            const better = preferredCameraId(inputs, cam.deviceId)
+            if (better) { cam.stop(); cam = await startCamera(webcam, better); camRef.current = cam; setActiveCam(cam.deviceId) }
+          }
         }
+        if (!scoringRef.current) { setCamStatus('ready'); return }
         const provider = await getPoseProvider()
         await provider.init()
-        if (disposed) {
-          cam.stop()
-          return
-        }
-
-        const engine = new PracticeEngine({
-          provider,
-          webcam,
-          getReference,
-          config: cfgRef.current,
-        })
+        if (disposed) return cam.stop()
+        const engine = new PracticeEngine({ provider, webcam, getReference, config: cfgRef.current })
         engineRef.current = engine
-
         engine.onResult((r) => {
-          // Overlay (imperative — no React re-render at 30fps).
           const canvas = webcamCanvasRef.current
           if (canvas) {
             const ctx = canvas.getContext('2d')
-            if (ctx) {
-              drawSkeleton(ctx, r.liveImage, {
-                perLimb: r.frame?.perLimb,
-                minVisibility: 0.3,
-                lineWidth: Math.max(3, canvas.width * 0.006),
-              })
-            }
+            if (ctx) drawSkeleton(ctx, r.liveImage, { perLimb: r.frame?.perLimb, minVisibility: 0.3, lineWidth: Math.max(2, canvas.width * 0.012) })
           }
-          // Throttle the meter to ~12/s.
           const now = performance.now()
-          if (now - meterThrottleRef.current > 80) {
-            meterThrottleRef.current = now
-            setMeter(r.rollingScore)
-          }
-          // "Step into frame" hint when we haven't seen a body for a moment.
+          if (now - meterThrottleRef.current > 250) { meterThrottleRef.current = now; setMeter(r.rollingScore) }
           if (r.bodyPresent) lastBodyMsRef.current = now
           const hint = now - lastBodyMsRef.current > 1200
-          if (hint !== noBodyShownRef.current) {
-            noBodyShownRef.current = hint
-            setNoBody(hint)
-          }
+          if (hint !== noBodyShownRef.current) { noBodyShownRef.current = hint; setNoBody(hint) }
         })
-
         lastBodyMsRef.current = performance.now()
-        engine.start()
-        engine.startRecording()
+        engine.start(); engine.startRecording()
         setCamStatus('ready')
       } catch (e) {
         if (disposed) return
@@ -314,406 +373,674 @@ export function Practice() {
         setCamError(e instanceof Error ? e.message : String(e))
       }
     })()
-
     return () => {
       disposed = true
-      engineRef.current?.stop()
-      engineRef.current = null
-      cam?.stop()
+      engineRef.current?.stop(); engineRef.current = null
+      ;(camRef.current ?? cam)?.stop(); camRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [track.id])
+  }, [track.id, cameraOn, playbackOnly, phase])
 
-  // Spacebar = play/pause (a natural shortcut while dancing away from the keyboard).
+  useEffect(() => {
+    const cs = [instructorCanvasRef.current, instructorOverlayRef.current, webcamCanvasRef.current].filter(
+      (c): c is HTMLCanvasElement => c != null,
+    )
+    if (cs.length === 0) return
+    cs.forEach(sizeCanvas)
+    const ro = new ResizeObserver(() => cs.forEach(sizeCanvas))
+    cs.forEach((c) => ro.observe(c))
+    return () => ro.disconnect()
+  }, [videoUrl, cameraOn, camStatus, phase])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code !== 'Space') return
+      if (e.code !== 'Space' || phase !== 'go') return
       const el = e.target as HTMLElement | null
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
       e.preventDefault()
-      const pb = playbackRef.current
-      if (!pb) return
-      pb.toggle()
-      setPlaying(pb.isPlaying)
-      if (pb.isPlaying) {
-        prevTimeRef.current = pb.getTime()
-        engineRef.current?.startRecording()
-      }
+      togglePlay()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase])
+
+  // Pause when the tab is hidden. The browser suspends requestAnimationFrame while hidden,
+  // so the segment-loop logic stops but the <video> keeps playing — which would otherwise
+  // run straight past the segment through the whole song. Pause like a video player does.
+  useEffect(() => {
+    const onVis = () => {
+      if (!document.hidden) return
+      playbackRef.current?.pause()
+      if (countdownTimerRef.current) { window.clearTimeout(countdownTimerRef.current); countdownTimerRef.current = null }
+      setCountdown(0)
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
 
-  // Size the canvases to their displayed box once, and only again on resize — so the
-  // 30–60fps draw loops never touch layout (getBoundingClientRect) themselves.
-  useEffect(() => {
-    const canvases = [
-      instructorCanvasRef.current,
-      instructorOverlayRef.current,
-      webcamCanvasRef.current,
-    ].filter((c): c is HTMLCanvasElement => c != null)
-    if (canvases.length === 0) return
-    canvases.forEach(sizeCanvas)
-    const ro = new ResizeObserver(() => canvases.forEach(sizeCanvas))
-    canvases.forEach((c) => ro.observe(c))
-    return () => ro.disconnect()
-  }, [videoUrl, camStatus])
-
-  // Grade the take just recorded for the active section, update best + unlock.
-  function gradeActiveSection() {
-    const eng = engineRef.current
-    const tr = trackRef.current
-    if (!eng || !tr) return
-    const take = eng.stopRecording()
-    eng.startRecording() // immediately begin capturing the next pass
-    const idx = activeIndexRef.current
-    const section = tr.sections[idx]
-    if (!section || take.length < 3) return
-    const refAngles = sectionAngles(tr, section.startSec, section.endSec)
-    if (refAngles.length < 2) return
-
-    const result = scoreSection(refAngles, take, cfgRef.current)
-    setLastTake(result)
-    applyResult(idx, result.score)
-  }
-
-  function applyResult(index: number, score: number) {
-    const prog: DanceProgress =
-      progressRef.current ?? { trackId: track.id, bestSectionScores: {}, unlockedThrough: 0 }
-    const prevBest = prog.bestSectionScores[index] ?? 0
-    const best = Math.max(prevBest, score)
-    const bestSectionScores = { ...prog.bestSectionScores, [index]: best }
-    let unlockedThrough = prog.unlockedThrough
-    if (best >= PASS_THRESHOLD && index === unlockedThrough && index < track.sections.length - 1) {
-      unlockedThrough = index + 1
-      const nextLabel = track.sections[unlockedThrough]?.label ?? 'next section'
-      flashToast(`🎉 Nice! ${nextLabel} unlocked`)
-    }
-    void updateProgress({ ...prog, bestSectionScores, unlockedThrough })
-  }
-
-  function flashToast(msg: string) {
-    setToast(msg)
-    window.setTimeout(() => setToast(null), 2600)
-  }
-
-  // ---- Control handlers ----
-  function togglePlay() {
-    const pb = playbackRef.current
-    if (!pb) return
-    pb.toggle()
-    setPlaying(pb.isPlaying)
-    if (pb.isPlaying) {
-      prevTimeRef.current = pb.getTime()
-      engineRef.current?.startRecording()
-    }
-  }
-
-  function selectSection(index: number) {
-    const pb = playbackRef.current
-    const section = track.sections[index]
-    if (!pb || !section) return
-    setActiveIndex(index)
-    activeIndexRef.current = index
-    setLastTake(null)
-    pb.setLoop(loopingRef.current ? { startSec: section.startSec, endSec: section.endSec } : null)
-    pb.seek(section.startSec)
-    prevTimeRef.current = section.startSec
-    engineRef.current?.startRecording()
-  }
-
-  function changeRate(r: number) {
-    setRate(r)
-    playbackRef.current?.setRate(r)
-  }
-
-  function toggleMirror() {
-    setMirror((m) => !m)
-  }
-
-  function toggleLoop() {
-    setLooping((prev) => {
-      const next = !prev
-      const pb = playbackRef.current
-      const section = track.sections[activeIndexRef.current]
-      if (pb && section) pb.setLoop(next ? { startSec: section.startSec, endSec: section.endSec } : null)
-      return next
-    })
-  }
-
-  function restart() {
-    const section = track.sections[activeIndexRef.current]
-    const pb = playbackRef.current
-    if (pb && section) {
-      pb.seek(section.startSec)
-      prevTimeRef.current = section.startSec
-      engineRef.current?.startRecording()
-    }
-  }
-
-  // Map a recognized voice command to an action. Reassigned every render so it always
-  // sees the latest state; the controller invokes it through voiceHandlerRef.
-  voiceHandlerRef.current = (cmd: VoiceCommand) => {
-    const pb = playbackRef.current
-    switch (cmd) {
-      case 'play':
-        if (pb && !pb.isPlaying) {
-          pb.play()
-          setPlaying(true)
-          prevTimeRef.current = pb.getTime()
-          engineRef.current?.startRecording()
-        }
-        break
-      case 'pause':
-        if (pb && pb.isPlaying) {
-          pb.pause()
-          setPlaying(false)
-        }
-        break
-      case 'restart':
-        restart()
-        break
-      case 'slower':
-        changeRate(stepRate(rate, -1))
-        break
-      case 'faster':
-        changeRate(stepRate(rate, 1))
-        break
-      case 'normalSpeed':
-        changeRate(1)
-        break
-      case 'toggleLoop':
-        toggleLoop()
-        break
-      case 'toggleMirror':
-        toggleMirror()
-        break
-      case 'toggleSkeleton':
-        setShowSkeleton((s) => !s)
-        break
-      case 'next': {
-        const i = activeIndexRef.current
-        const maxUnlocked = progressRef.current?.unlockedThrough ?? 0
-        if (i + 1 < track.sections.length && i + 1 <= maxUnlocked) selectSection(i + 1)
-        break
-      }
-      case 'prev': {
-        const i = activeIndexRef.current
-        if (i - 1 >= 0) selectSection(i - 1)
-        break
-      }
-    }
-  }
-
-  // Start/stop voice recognition when toggled on.
   useEffect(() => {
     if (!voiceOn) return
     const vc = new VoiceController({
-      onCommand: (cmd) => {
-        voiceHandlerRef.current(cmd)
-        flashToast(`🎙 ${VOICE_LABEL[cmd]}`)
-      },
-      onStatus: (s, detail) => {
-        setVoiceStatus(s)
-        if (s === 'error') {
-          setVoiceErr(detail ?? 'Voice error')
-          setVoiceOn(false)
-        }
-      },
+      onCommand: (cmd) => { voiceHandlerRef.current(cmd); flashToast(`🎙 ${VOICE_LABEL[cmd]}`) },
+      onStatus: (s) => { if (s === 'error') setVoiceOn(false) },
     })
     vc.start()
     return () => vc.stop()
   }, [voiceOn])
 
-  const passedCount = track.sections.filter(
-    (s) => (progress?.bestSectionScores[s.index] ?? 0) >= PASS_THRESHOLD,
-  ).length
+  function gradeLoop() {
+    const eng = engineRef.current
+    const tr = trackRef.current
+    if (!eng || !tr) return
+    const take = eng.stopRecording()
+    eng.startRecording()
+    if (take.length < 3) return
+    const refAngles = sectionAngles(tr, loopStartRef.current, loopEndRef.current)
+    if (refAngles.length < 2) return
+    setLastTake(scoreSection(refAngles, take, cfgRef.current))
+  }
+  function flashToast(msg: string) { setToast(msg); window.setTimeout(() => setToast(null), 2400) }
 
-  return (
-    <div className="mx-auto flex min-h-screen max-w-6xl flex-col gap-4 p-4 sm:p-6">
-      {/* Header */}
-      <header className="flex items-center justify-between gap-3">
-        <button
-          onClick={back}
-          className="rounded-xl border border-line bg-white/5 px-3.5 py-2 text-sm text-white/75 transition hover:border-white/25 hover:text-white"
-        >
-          ← Library
+  function clearCountdown() {
+    if (countdownTimerRef.current) { window.clearTimeout(countdownTimerRef.current); countdownTimerRef.current = null }
+    setCountdown(0)
+  }
+  // The break before playback resumes. `label` reads "Replaying in" for a loop repeat or
+  // "Playing next segment in" after Got it. Length is the user's break setting (0 = none).
+  function runCountdown(after: () => void, label = 'Replaying in', seconds = breakRef.current) {
+    clearCountdown()
+    const total = seconds
+    if (total <= 0) { after(); return }
+    setCountdownLabel(label)
+    let n = total
+    setCountdown(n)
+    const tick = () => {
+      n -= 1
+      if (n <= 0) { setCountdown(0); countdownTimerRef.current = null; after() }
+      else { setCountdown(n); countdownTimerRef.current = window.setTimeout(tick, 1000) }
+    }
+    countdownTimerRef.current = window.setTimeout(tick, 1000)
+  }
+
+  function setLoopRegion(s: number, e: number) {
+    const pb = playbackRef.current
+    if (!pb) return
+    loopStartRef.current = s
+    loopEndRef.current = e
+    repCounterRef.current = 0
+    setLastTake(null)
+    pb.setLoop({ startSec: s, endSec: e })
+    pb.seek(s)
+    prevTimeRef.current = s
+    lastSeekMsRef.current = performance.now()
+    awaitingSeekRef.current = s
+    engineRef.current?.startRecording()
+  }
+
+  function gotoMove(i: number, play = true) {
+    clearCountdown()
+    const list = movesRef.current
+    const idx = Math.max(0, Math.min(i, list.length - 1))
+    const m = list[idx]
+    if (!m) return
+    setFullRun(false); fullRunRef.current = false
+    setMoveIdx(idx); moveIdxRef.current = idx
+    setLoopRegion(m.startSec, m.endSec)
+    if (play) { playbackRef.current?.play(); setPlaying(true) }
+  }
+  // Tapping a segment on the timeline. If it's already done (greyed), un-mark it for review.
+  // In Full song: stay in full song, just jump the playhead to that segment and play on.
+  // Otherwise: drill just that segment. Either way, hold a "Get ready" 3-2-1 countdown first.
+  function reviewSegment(i: number) {
+    if (completedRef.current.includes(i)) {
+      const next = completedRef.current.filter((x) => x !== i)
+      setCompleted(next); completedRef.current = next
+      flashToast('Marked for review')
+    }
+    const pb = playbackRef.current
+    if (!pb) return
+    const list = movesRef.current
+    const idx = Math.max(0, Math.min(i, list.length - 1))
+    const m = list[idx]
+    if (!m) return
+    pb.pause()
+    setMoveIdx(idx); moveIdxRef.current = idx
+    if (fullRunRef.current) {
+      // Keep the full-range loop; just move the playhead to this segment's start.
+      pb.seek(m.startSec)
+      prevTimeRef.current = m.startSec
+      awaitingSeekRef.current = m.startSec
+      lastSeekMsRef.current = performance.now()
+    } else {
+      setLoopRegion(m.startSec, m.endSec)
+    }
+    runCountdown(() => {
+      const p = playbackRef.current
+      if (!p) return
+      engineRef.current?.startRecording()
+      p.play(); setPlaying(true)
+    }, 'Get ready', 3)
+  }
+  function repeatMove() {
+    clearCountdown()
+    setLoopRegion(loopStartRef.current, loopEndRef.current)
+    playbackRef.current?.play(); setPlaying(true)
+  }
+  function gotIt() {
+    const list = movesRef.current
+    const cur = moveIdxRef.current
+    const done = completedRef.current.includes(cur) ? completedRef.current : [...completedRef.current, cur]
+    setCompleted(done); completedRef.current = done
+    // Find the next segment that isn't done or skipped, starting after the current one.
+    const n = list.length
+    let next = -1
+    for (let k = 1; k <= n; k++) { const j = (cur + k) % n; if (!done.includes(j) && !skipRef.current.includes(j)) { next = j; break } }
+    if (next === -1) {
+      clearCountdown()
+      playbackRef.current?.pause(); setPlaying(false)
+      flashToast('You got the whole thing 🎉')
+    } else {
+      // Set up the next segment, then wait the break before it starts.
+      flashToast('Nice ✓')
+      clearCountdown()
+      const pb = playbackRef.current
+      pb?.pause(); setPlaying(false)
+      setFullRun(false); fullRunRef.current = false
+      setMoveIdx(next); moveIdxRef.current = next
+      const m = list[next]
+      if (m) setLoopRegion(m.startSec, m.endSec)
+      runCountdown(() => { playbackRef.current?.play(); setPlaying(true) }, 'Playing next segment in')
+    }
+  }
+  // (Re)detect the moves for a range. 'auto' snaps cuts to natural pauses; 'even' spaces
+  // them evenly. Clears progress since the moves changed.
+  function segmentInto(s: number, e: number, mode: 'auto' | 'even') {
+    const bounds = mode === 'auto'
+      ? autoMoveBounds(trackRef.current.frames, s, e, moveSec)
+      : evenMoveBounds(s, e, moveSec)
+    setMoveBounds(bounds)
+    setCompleted([]); completedRef.current = []; setSkip([])
+    setMoveIdx(0); moveIdxRef.current = 0
+    setPreviewIdx(-1)
+  }
+  // In the editor, tap a segment to loop-play just that slice so you can see where it ends.
+  function previewSegment(m: Move) {
+    clearCountdown()
+    setCreating(false)
+    setPreviewIdx(m.index)
+    setLoopRegion(m.startSec, m.endSec)
+    playbackRef.current?.play()
+  }
+
+  // Segment creator: clear the cuts, play the whole range, and let the user tap to drop a
+  // cut wherever a move ends — building the segments themselves in one watch-through.
+  function startCreator() {
+    clearCountdown()
+    setPreviewIdx(-1)
+    setMoveBounds([])
+    setCompleted([]); completedRef.current = []; setSkip([])
+    setCreating(true)
+    setLoopRegion(trimStart, trimEnd)
+    playbackRef.current?.play()
+  }
+  function addCut() {
+    const t = playbackRef.current?.getTime() ?? trimStart
+    if (t <= trimStart + 0.2 || t >= trimEnd - 0.2) return
+    if (movesRef.current.some((m) => Math.abs(m.startSec - t) < 0.25)) return
+    setMoveBounds([...movesRef.current.slice(1).map((m) => m.startSec), t].sort((a, b) => a - b))
+    setSkip([])
+  }
+  function onTrimChange(s: number, e: number) {
+    setTrimStart(s); setTrimEnd(e)
+    // In the creator, leave the segments to the user — just keep their cuts that still fall
+    // inside the new range. Otherwise re-detect to match the new range.
+    if (creatingRef.current) {
+      setMoveBounds((bounds) => bounds.filter((b) => b > s + 0.05 && b < e - 0.05))
+      setPreviewIdx(-1); setSkip([])
+      return
+    }
+    segmentInto(s, e, 'auto')
+    window.setTimeout(() => gotoMove(0, phase === 'go'), 0)
+  }
+
+  // ---- Move editor handlers (used on the bounds step) ----
+  function editorMoveBound(moveIndex: number, t: number) {
+    // Replace the (moveIndex-1)-th internal cut with the dragged time, then re-sort.
+    const cuts = movesRef.current.slice(1).map((m) => m.startSec)
+    if (moveIndex - 1 < 0 || moveIndex - 1 >= cuts.length) return
+    cuts[moveIndex - 1] = t
+    setMoveBounds(cuts.slice().sort((a, b) => a - b))
+  }
+  function editorRemoveBound(moveIndex: number) {
+    const cuts = movesRef.current.slice(1).map((m) => m.startSec)
+    cuts.splice(moveIndex - 1, 1)
+    setMoveBounds(cuts)
+    setCompleted([]); completedRef.current = []; setSkip([])
+  }
+  // Delete a segment: drop the boundary that makes it distinct so its time merges into a
+  // neighbour (the first segment merges into the next, others into the previous).
+  function deleteSegment(moveIndex: number) {
+    if (movesRef.current.length <= 1) return
+    editorRemoveBound(moveIndex === 0 ? 1 : moveIndex)
+    setPreviewIdx(-1)
+  }
+  // Skip/cut a segment out of practice (e.g. the instructor's explanation parts).
+  function toggleSkip(i: number) {
+    setSkip((s) => (s.includes(i) ? s.filter((x) => x !== i) : [...s, i]))
+  }
+  // Next non-skipped segment index in a direction (wraps).
+  function nextOpen(from: number, dir: 1 | -1): number {
+    const n = movesRef.current.length
+    for (let k = 1; k <= n; k++) {
+      const j = (((from + dir * k) % n) + n) % n
+      if (!skipRef.current.includes(j)) return j
+    }
+    return from
+  }
+  function splitAtPlayhead() {
+    const t = playbackRef.current?.getTime() ?? trimStart
+    if (t <= trimStart + 0.2 || t >= trimEnd - 0.2) { flashToast('Move the playhead into the range first'); return }
+    if (movesRef.current.some((m) => Math.abs(m.startSec - t) < 0.2)) { flashToast('Too close to a divider'); return }
+    setMoveBounds([...movesRef.current.slice(1).map((m) => m.startSec), t].sort((a, b) => a - b))
+    setCompleted([]); completedRef.current = []; setSkip([])
+  }
+  function playAll() {
+    const pb = playbackRef.current
+    if (!pb) return
+    clearCountdown()
+    // Toggle: tapping Full song again returns to the segment you were on.
+    if (fullRunRef.current) {
+      gotoMove(segmentBeforeFullRef.current)
+      return
+    }
+    segmentBeforeFullRef.current = moveIdxRef.current
+    setFullRun(true); fullRunRef.current = true
+    setMoveIdx(0); moveIdxRef.current = 0
+    setLoopRegion(trimStart, trimEnd)
+    pb.play(); setPlaying(true)
+  }
+
+  function togglePlay() {
+    const pb = playbackRef.current
+    if (!pb) return
+    clearCountdown()
+    pb.toggle()
+    setPlaying(pb.isPlaying)
+    if (pb.isPlaying) { prevTimeRef.current = pb.getTime(); engineRef.current?.startRecording() }
+  }
+  function changeRate(r: number) { setRate(r); playbackRef.current?.setRate(r) }
+  function seekTo(t: number) { playbackRef.current?.seek(t); prevTimeRef.current = t; lastSeekMsRef.current = performance.now(); awaitingSeekRef.current = t }
+
+  async function switchCamera(deviceId: string) {
+    const webcam = webcamVideoRef.current
+    if (!webcam) return
+    try {
+      camRef.current?.stop()
+      const cam = await startCamera(webcam, deviceId)
+      camRef.current = cam
+      setActiveCam(cam.deviceId)
+      localStorage.setItem('movewith.cameraId', deviceId)
+      setCameras(await listVideoInputs())
+    } catch (e) { setCamError(e instanceof Error ? e.message : String(e)) }
+  }
+
+  function goToBounds() {
+    setPhase('bounds')
+    // If segments were already saved/restored for this track, open the editor showing them;
+    // otherwise start the "create your segments" step blank so the user places their own.
+    const hasSegments = moveBounds.length > 0
+    setCreating(!hasSegments)
+    setPreviewIdx(-1)
+    setMoveIdx(0); moveIdxRef.current = 0
+    // Autoplay the video here so they can watch while placing cuts.
+    window.setTimeout(() => {
+      const pb = playbackRef.current
+      if (pb) { pb.setLoop({ startSec: trimStart, endSec: trimEnd }); pb.seek(trimStart); prevTimeRef.current = trimStart; pb.play(); setPlaying(true) }
+    }, 80)
+  }
+  // Jump back to the segment editor (the bounds step) without losing the trim/segments.
+  function editSegments() {
+    playbackRef.current?.pause()
+    setPlaying(false)
+    setCreating(false)
+    setPhase('bounds')
+    window.setTimeout(() => {
+      const pb = playbackRef.current
+      if (pb) { pb.setLoop({ startSec: trimStart, endSec: trimEnd }); pb.seek(trimStart); prevTimeRef.current = trimStart; pb.play(); setPlaying(true) }
+    }, 60)
+  }
+  function beginPractice() {
+    setPhase('go')
+    playbackRef.current?.pause(); setPlaying(false)
+    // Set up the first non-skipped segment but don't play yet — "Get ready" countdown first.
+    const first = skipRef.current.includes(0) ? nextOpen(0, 1) : 0
+    window.setTimeout(() => {
+      gotoMove(first, false)
+      runCountdown(() => {
+        const p = playbackRef.current
+        if (!p) return
+        engineRef.current?.startRecording()
+        p.play(); setPlaying(true)
+      }, 'Get ready', 3)
+    }, 60)
+  }
+
+  voiceHandlerRef.current = (cmd) => {
+    const pb = playbackRef.current
+    switch (cmd) {
+      case 'play': if (pb && !pb.isPlaying) togglePlay(); break
+      case 'pause': if (pb && pb.isPlaying) togglePlay(); break
+      case 'restart': repeatMove(); break
+      case 'slower': changeRate(stepRate(rate, -1)); break
+      case 'faster': changeRate(stepRate(rate, 1)); break
+      case 'normalSpeed': changeRate(1); break
+      case 'toggleMirror': setMirror((m) => !m); break
+      case 'next': gotIt(); break
+      case 'prev': gotoMove(nextOpen(moveIdxRef.current, -1)); break
+      default: break
+    }
+  }
+
+  const tip = lastTake && lastTake.score < PASS_THRESHOLD && lastTake.worstLimb ? LIMB_TIP[lastTake.worstLimb] : null
+  const btn = 'rounded-xl border border-line bg-ink/[0.06] px-3.5 py-2.5 text-sm font-medium text-ink/70 transition hover:border-ink/25 hover:text-ink active:scale-95'
+  const chip = (on: boolean) =>
+    `rounded-xl px-4 py-2 text-sm font-semibold transition ${on ? 'bg-brand text-cream shadow-glow' : 'border border-line bg-ink/[0.06] text-ink/70 hover:text-ink'}`
+
+  // ---------- SETUP ----------
+  if (phase === 'setup') {
+    return (
+      <div className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-6 p-5 sm:p-8">
+        <button onClick={back} className={btn + ' !py-2 absolute left-5 top-5'}>← Library</button>
+        <div className="text-center">
+          <h1 className="font-display text-3xl font-bold tracking-tightish">{track.name}</h1>
+          <p className="mt-1 text-sm text-ink/50">{Math.round(track.tempo.bpm)} BPM · set it up, then dance</p>
+        </div>
+
+        <div className="space-y-5 rounded-2.5xl border border-line bg-panel/70 p-6 shadow-soft">
+          <div>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Segment length</p>
+            <div className="flex gap-2">
+              {MOVE_SIZES.map((m) => (
+                <button key={m.label} onClick={() => setMoveSec(m.sec)} className={chip(moveSec === m.sec)}>{m.label}</button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-ink/45">The dance splits into short segments you learn one at a time. You set them up next; this is just the target length.</p>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Repeat each segment</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={() => setReps(Infinity)} className={chip(reps === Infinity)}>Loop till I move on</button>
+              <span className="text-sm text-ink/40">or</span>
+              <input
+                type="number"
+                min={1}
+                inputMode="numeric"
+                value={reps === Infinity ? '' : reps}
+                placeholder="5"
+                onChange={(e) => {
+                  const n = parseInt(e.target.value, 10)
+                  setReps(Number.isFinite(n) && n > 0 ? n : 1)
+                }}
+                className="w-16 rounded-xl border border-line bg-ink/[0.06] px-3 py-2 text-center text-sm text-ink outline-none focus:border-brand"
+              />
+              <span className="text-sm text-ink/50">times</span>
+            </div>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Break between replays</p>
+            <div className="flex gap-2">
+              {[0, 2, 3, 5].map((s) => (
+                <button key={s} onClick={() => setBreakSecs(s)} className={chip(breakSecs === s)}>{s === 0 ? 'No break' : `${s}s`}</button>
+              ))}
+            </div>
+          </div>
+          {!playbackOnly && (
+            <div>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Camera</p>
+              <div className="flex gap-2">
+                <button onClick={() => setCameraOn(true)} className={chip(cameraOn)}>On · score me</button>
+                <button onClick={() => setCameraOn(false)} className={chip(!cameraOn)}>Off · just follow</button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <button onClick={goToBounds} className="rounded-2xl bg-brand py-4 text-lg font-bold text-cream shadow-glow transition hover:brightness-105 active:scale-[0.99]">
+          Next: trim & create segments ▶
         </button>
+      </div>
+    )
+  }
+
+  const inGo = phase === 'go'
+
+  // ---------- PRACTICE ----------
+  return (
+    <div className="mx-auto flex min-h-screen max-w-4xl flex-col gap-3 p-4 sm:p-6">
+      <header className="flex items-center justify-between gap-3">
+        <button onClick={() => { playbackRef.current?.pause(); setPlaying(false); setPhase('setup') }} className={btn + ' !py-2'}>‹ Settings</button>
         <div className="min-w-0 text-center">
-          <h1 className="truncate font-display text-lg font-semibold tracking-tightish">{track.name}</h1>
-          <p className="text-xs text-white/45">
-            {passedCount}/{track.sections.length} mastered · {Math.round(track.tempo.bpm)} BPM
+          <h1 className="truncate font-display text-base font-semibold tracking-tightish">{track.name}</h1>
+          <p className="text-xs text-ink/45">
+            {phase === 'bounds'
+              ? (creating ? 'Create your segments' : 'Edit segments')
+              : fullRun
+                ? 'Full song'
+                : `Segment ${moveIdx + 1} of ${moves.length}`}
           </p>
         </div>
-        {/* Mastery progress dots — a small, deliberate status cue. */}
-        <div className="flex w-[84px] justify-end gap-1.5">
-          {track.sections.map((s) => {
-            const passed = (progress?.bestSectionScores[s.index] ?? 0) >= PASS_THRESHOLD
-            return (
-              <span
-                key={s.index}
-                className={`h-1.5 w-1.5 rounded-full ${passed ? 'bg-good' : 'bg-white/20'}`}
-              />
-            )
-          })}
-        </div>
+        <button onClick={back} className={btn + ' !py-2'}>Exit</button>
       </header>
 
-      {/* Stages */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* Instructor */}
-        <section className="relative aspect-video overflow-hidden rounded-2.5xl border border-line bg-black/50 shadow-soft">
-          <span className="absolute left-3 top-3 z-10 rounded-full bg-black/40 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wider text-white/70 backdrop-blur">
-            Instructor
+      {/* Instructor (flips when Mirror is on) */}
+      <section className="relative aspect-video overflow-hidden rounded-2.5xl border border-line bg-black/60 shadow-soft">
+        {/* Which segment you're on — top-left badge (no beat count). */}
+        {inGo && (
+          <span className="absolute left-3 top-3 z-20 rounded-2xl bg-brand px-3 py-2 font-display text-sm font-bold text-cream shadow-glow">
+            {fullRun ? 'Full song' : `Segment ${moveIdx + 1} of ${moves.length}`}
           </span>
-          {/* Live 8-count so you always know where you are in the phrase. */}
-          {playing && count > 0 && (
-            <span className="absolute right-3 top-3 z-10 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-brand to-brand2 font-display text-2xl font-bold tabular-nums text-white shadow-glow">
-              {count}
-            </span>
-          )}
+        )}
+        {/* Editor preview: which segment is playing. */}
+        {!inGo && previewIdx >= 0 && moves[previewIdx] && (
+          <span className="absolute left-3 top-3 z-20 rounded-2xl bg-brand px-3 py-2 font-display text-sm font-bold text-cream shadow-glow">
+            ▶ Segment {previewIdx + 1}
+          </span>
+        )}
+        {/* Mirror is done by flipping the CANVAS draw (see drawInstructor), never by
+            CSS-transforming the <video> — that tore into a split-screen on Windows. When
+            mirrored the canvas paints the flipped video over the (untouched) <video>. */}
+        <div className="absolute inset-0">
           {videoUrl ? (
             <>
-              <video ref={instructorVideoRef} src={videoUrl} className="h-full w-full object-contain" playsInline />
-              <canvas ref={instructorOverlayRef} className="pointer-events-none absolute inset-0 h-full w-full" />
-              <button
-                onClick={() => setShowSkeleton((s) => !s)}
-                title="Show or hide the tracked skeleton on the instructor"
-                className="absolute bottom-3 right-3 z-10 rounded-lg border border-line bg-black/45 px-2.5 py-1.5 text-xs font-medium text-white/80 backdrop-blur transition hover:border-white/30"
-              >
-                {showSkeleton ? '🦴 Skeleton on' : '🦴 Skeleton off'}
-              </button>
+              <video
+                ref={attachInstructorVideo}
+                src={videoUrl}
+                className="absolute inset-0 h-full w-full object-contain"
+                playsInline
+              />
+              <canvas
+                ref={instructorOverlayRef}
+                className="pointer-events-none absolute inset-0 h-full w-full"
+              />
             </>
           ) : (
-            <canvas ref={instructorCanvasRef} className="h-full w-full" />
+            <canvas
+              ref={instructorCanvasRef}
+              className="absolute inset-0 h-full w-full"
+            />
           )}
-        </section>
-
-        {/* You */}
-        <section className="relative aspect-video overflow-hidden rounded-2.5xl border border-line bg-black/50 shadow-soft">
-          <span className="absolute left-3 top-3 z-10 rounded-full bg-black/40 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wider text-white/70 backdrop-blur">
-            You
-          </span>
-          <div className="mirror absolute inset-0">
-            <video ref={webcamVideoRef} className="h-full w-full object-cover" playsInline muted />
-            <canvas ref={webcamCanvasRef} className="absolute inset-0 h-full w-full" />
-          </div>
-
-          {camStatus !== 'ready' && (
-            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-black/70 p-4 text-center">
-              {camStatus === 'init' ? (
-                <>
-                  <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                  <p className="text-sm text-white/70">Starting camera & loading the AI model…</p>
-                </>
-              ) : (
-                <>
-                  <p className="text-sm font-semibold text-bad">Camera unavailable</p>
-                  <p className="max-w-xs text-xs text-white/60">{camError}</p>
-                </>
+        </div>
+        {cameraOn && (
+          <div className="absolute bottom-3 right-3 z-20 w-[34%] max-w-[230px] overflow-hidden rounded-xl border border-brand/50 bg-black/60 shadow-soft">
+            <div className="relative aspect-video">
+              <div className="mirror absolute inset-0">
+                <video ref={webcamVideoRef} className="h-full w-full object-cover" playsInline muted />
+                <canvas ref={webcamCanvasRef} className="absolute inset-0 h-full w-full" />
+              </div>
+              {camStatus !== 'ready' && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/70 p-2 text-center">
+                  {camStatus === 'init'
+                    ? <div className="h-5 w-5 animate-spin rounded-full border-2 border-cream/30 border-t-cream" />
+                    : <p className="text-[11px] text-bad">{camError ?? 'No camera'}</p>}
+                </div>
+              )}
+              {scoring && camStatus === 'ready' && noBody && (
+                <p className="absolute inset-x-0 bottom-1 text-center text-[10px] text-warn">step into frame</p>
               )}
             </div>
-          )}
+            {scoring && <div className="px-2 pb-2 pt-1"><AccuracyMeter score={meter} compact label="Match" /></div>}
+          </div>
+        )}
+        {countdown > 0 && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/45 backdrop-blur-[1px]">
+            <p className="text-xs uppercase tracking-[0.2em] text-cream/70">{countdownLabel}</p>
+            <p className="font-display text-7xl font-bold text-cream drop-shadow">{countdown}</p>
+          </div>
+        )}
+      </section>
 
-          {camStatus === 'ready' && noBody && (
-            <div className="absolute inset-x-0 top-1/2 z-10 -translate-y-1/2 px-4 text-center">
-              <span className="rounded-full bg-black/60 px-3 py-1.5 text-sm text-warn">
-                Step back so your whole body is in frame
+      {/* Bounds: a trimmer to pick the part. Practice: the segment timeline (already trimmed). */}
+      {inGo ? (
+        <SegmentBar
+          trimStart={trimStart}
+          trimEnd={trimEnd}
+          moves={moves}
+          activeIndex={moveIdx}
+          completed={completed}
+          skip={skip}
+          playheadRef={moveEditorPlayheadRef}
+          onTap={reviewSegment}
+          onSeek={seekTo}
+        />
+      ) : (
+        <Scrubber duration={duration} currentTime={0} rangeStart={trimStart} rangeEnd={trimEnd} sections={ticks} onSeek={seekTo} onRangeChange={onTrimChange} playheadRef={scrubPlayheadRef} />
+      )}
+
+      {!inGo ? (
+        /* Bounds step: trim, then create the segments to learn, then begin */
+        <div className="flex flex-col items-center gap-3">
+          <p className="max-w-lg text-center text-sm text-ink/55">
+            {creating ? (
+              <>
+                <b className="text-ink/80">Step 2: create your segments.</b> Play the video and tap{' '}
+                <b className="text-ink/80">✂ Cut here</b> wherever a move ends. Build them one at a time, in
+                order. (First trim the part you want with the handles above, or tap ↻ Auto-detect.)
+              </>
+            ) : (
+              <>Fine-tune your segments: tap to play, <b className="text-ink/80">⊘ to skip</b> a part (like an explanation), ✕ to delete, drag a divider to move it.</>
+            )}
+          </p>
+
+          {/* Segment editor */}
+          <div className="w-full rounded-2xl border border-brand/30 bg-brand/[0.06] p-3">
+            <div className="mb-2 flex items-center gap-2">
+              <span className="font-display text-sm font-semibold">{creating ? '✂ Create your segments' : '✎ Segment editor'}</span>
+              <span className="text-xs text-ink/50">
+                {creating ? 'one ✂ Cut at the end of each move' : 'tap to play · ⊘ skip · ✕ delete · drag dividers'}
               </span>
             </div>
-          )}
-
-          <div className="absolute inset-x-3 bottom-3 z-10">
-            <AccuracyMeter score={meter} compact label="Live match" />
+            <MoveEditor
+              trimStart={trimStart}
+              trimEnd={trimEnd}
+              moves={moves}
+              activeIndex={previewIdx}
+              playheadRef={moveEditorPlayheadRef}
+              creating={creating}
+              skip={skip}
+              onPlaySegment={previewSegment}
+              onMoveBound={editorMoveBound}
+              onDeleteSegment={deleteSegment}
+              onToggleSkip={toggleSkip}
+            />
           </div>
-        </section>
-      </div>
 
-      {/* Coaching line */}
-      <div className="flex min-h-[28px] items-center justify-center gap-3 text-sm">
-        {toast ? (
-          <span className="rounded-full bg-good/20 px-3 py-1 font-semibold text-good">{toast}</span>
-        ) : lastTake ? (
-          <span className="text-white/70">
-            Last take:{' '}
-            <b style={{ color: lastTake.score >= PASS_THRESHOLD ? '#36d399' : '#ffb547' }}>
-              {Math.round(lastTake.score)}%
-            </b>
-            {lastTake.score < PASS_THRESHOLD && lastTake.worstLimb && (
-              <span className="text-white/50"> · {LIMB_TIP[lastTake.worstLimb]}</span>
+          {creating ? (
+            /* Create step: watch it play, tap to drop a cut at each move */
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button onClick={togglePlay} className={btn}>{playing ? '⏸ Pause' : '▶ Play'}</button>
+              <div className="flex items-center gap-1 rounded-xl border border-line bg-ink/[0.06] p-1">
+                {RATE_STEPS.slice().reverse().map((r) => (
+                  <button key={r} onClick={() => changeRate(r)} className={`rounded-lg px-3 py-1.5 text-sm font-medium tabular-nums transition ${rate === r ? 'bg-brand text-cream' : 'text-ink/55 hover:text-ink'}`}>{r === 1 ? '1×' : `${r}×`}</button>
+                ))}
+              </div>
+              <button onClick={addCut} className="rounded-xl bg-brand px-6 py-3 text-base font-bold text-cream shadow-glow transition hover:brightness-105 active:scale-95">
+                ✂ Cut here
+              </button>
+              <button onClick={() => segmentInto(trimStart, trimEnd, 'auto')} className={btn} title="Let it place the segments for you">↻ Auto-detect</button>
+              <button onClick={() => { setMoveBounds([]); setCompleted([]); completedRef.current = []; setPreviewIdx(-1) }} className={btn} title="Clear all cuts and start over">↺ Clear</button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button onClick={togglePlay} className={btn}>{playing ? '⏸ Pause' : '▶ Preview'}</button>
+              <div className="flex items-center gap-1 rounded-xl border border-line bg-ink/[0.06] p-1">
+                {RATE_STEPS.slice().reverse().map((r) => (
+                  <button key={r} onClick={() => changeRate(r)} className={`rounded-lg px-3 py-1.5 text-sm font-medium tabular-nums transition ${rate === r ? 'bg-brand text-cream' : 'text-ink/55 hover:text-ink'}`}>{r === 1 ? '1×' : `${r}×`}</button>
+                ))}
+              </div>
+              <button onClick={() => segmentInto(trimStart, trimEnd, 'auto')} className={btn} title="Re-detect segments from the dancing">↻ Auto-detect</button>
+              <button onClick={startCreator} className={btn} title="Clear and place your own segments">✋ Place my own</button>
+              <button onClick={splitAtPlayhead} className={btn}>✂ Split here</button>
+              <button onClick={() => segmentInto(trimStart, trimEnd, 'even')} className={btn} title="Space segments evenly">≡ Even</button>
+            </div>
+          )}
+          <button onClick={beginPractice} className="rounded-2xl bg-brand px-8 py-3 text-base font-bold text-cream shadow-glow transition hover:brightness-105 active:scale-95">
+            Start practicing ▶
+          </button>
+        </div>
+      ) : (
+        <>
+          {/* Transport */}
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <button onClick={togglePlay} className="rounded-xl bg-brand px-6 py-2.5 text-sm font-semibold text-cream shadow-glow transition hover:brightness-105 active:scale-95">
+              {playing ? '⏸ Pause' : '▶ Play'}
+            </button>
+            <div className="flex items-center gap-1 rounded-xl border border-line bg-ink/[0.06] p-1">
+              {RATE_STEPS.slice().reverse().map((r) => (
+                <button key={r} onClick={() => changeRate(r)} className={`rounded-lg px-3 py-1.5 text-sm font-medium tabular-nums transition ${rate === r ? 'bg-brand text-cream' : 'text-ink/55 hover:text-ink'}`}>
+                  {r === 1 ? '1×' : `${r}×`}
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setMirror((m) => !m)} className={mirror ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}>🪞 Mirror</button>
+            <button onClick={playAll} className={fullRun ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn} title="Practice the whole song start to finish">▶ Full song</button>
+            <button onClick={editSegments} className={btn} title="Go back and edit the segments">✎ Edit segments</button>
+            {voiceSupported && (
+              <button onClick={() => setVoiceOn((v) => !v)} className={voiceOn ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}>🎙</button>
             )}
-          </span>
-        ) : (
-          <span className="text-white/40">Press play and follow along. Loop a section until it turns green.</span>
-        )}
-      </div>
+          </div>
 
-      {/* Controls */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Controls
-          playing={playing}
-          rate={rate}
-          mirror={mirror}
-          looping={looping}
-          onTogglePlay={togglePlay}
-          onRate={changeRate}
-          onToggleMirror={toggleMirror}
-          onToggleLoop={toggleLoop}
-          onRestart={restart}
-        />
-        <span className="mx-1 hidden h-6 w-px bg-white/10 sm:block" />
-        <button
-          onClick={() => {
-            if (!voiceSupported) {
-              setVoiceErr('Voice control needs Chrome or Edge.')
-              return
-            }
-            setVoiceErr(null)
-            setVoiceOn((v) => !v)
-          }}
-          title="Hands-free control. Say: pause, rewind, slower, faster, loop, mirror, next"
-          className={[
-            'flex items-center gap-2 rounded-xl border px-3.5 py-2.5 text-sm font-medium transition active:scale-95',
-            voiceOn && voiceStatus === 'listening'
-              ? 'border-brand2/60 bg-brand2/20 text-white shadow-glowpink'
-              : 'border-line bg-white/5 text-white/65 hover:border-white/25 hover:text-white',
-            !voiceSupported ? 'opacity-50' : '',
-          ].join(' ')}
-        >
-          <span
-            className={
-              voiceOn && voiceStatus === 'listening'
-                ? 'h-2 w-2 animate-pulse rounded-full bg-brand2'
-                : 'h-2 w-2 rounded-full bg-white/30'
-            }
-          />
-          {voiceOn ? 'Listening' : '🎙 Voice'}
-        </button>
-      </div>
+          {/* Got it / repeat */}
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <button onClick={() => gotoMove(nextOpen(moveIdx, -1))} className={btn + ' !px-3'}>‹ prev</button>
+            <button onClick={repeatMove} className="rounded-xl border border-line bg-ink/[0.06] px-5 py-2.5 text-sm font-semibold text-ink/80 transition hover:text-ink active:scale-95">↻ Repeat</button>
+            <button onClick={gotIt} className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95">✓ Got it</button>
+            <button onClick={() => gotoMove(nextOpen(moveIdx, 1))} className={btn + ' !px-3'}>skip ›</button>
+          </div>
 
-      {/* Voice status / hint */}
-      {voiceErr ? (
-        <p className="text-xs text-bad/80">{voiceErr}</p>
-      ) : voiceOn && voiceStatus === 'listening' ? (
-        <p className="text-xs text-white/40">
-          Listening. Try “pause”, “rewind”, “slower”, “loop”, “next”.
-        </p>
-      ) : null}
+          {/* Coaching line */}
+          <div className="flex min-h-[24px] items-center justify-center text-sm">
+            {toast ? (
+              <span className="rounded-full bg-good/20 px-3 py-1 font-semibold text-good">{toast}</span>
+            ) : lastTake ? (
+              <span className="text-ink/70">
+                Last: <b style={{ color: lastTake.score >= PASS_THRESHOLD ? '#a3e635' : '#ff9f1c' }}>{Math.round(lastTake.score)}%</b>
+                {tip && <span className="text-ink/45"> · {tip}</span>}
+              </span>
+            ) : (
+              <span className="text-ink/40">Drill this segment, then ✓ Got it for the next one.</span>
+            )}
+          </div>
+        </>
+      )}
 
-      {/* Timeline */}
-      <div>
-        <h2 className="mb-3 font-display text-xs font-medium uppercase tracking-[0.18em] text-white/40">
-          Step by step
-        </h2>
-        <SectionTimeline
-          sections={track.sections}
-          activeIndex={activeIndex}
-          unlockedThrough={progress?.unlockedThrough ?? 0}
-          bestScores={progress?.bestSectionScores ?? {}}
-          passThreshold={PASS_THRESHOLD}
-          onSelect={selectSection}
-        />
-      </div>
+      {cameraOn && cameras.length > 0 && (
+        <div className="flex justify-center">
+          <select value={activeCam ?? ''} onChange={(e) => void switchCamera(e.target.value)} className="max-w-[240px] truncate rounded-xl border border-line bg-panel px-2 py-1.5 text-xs text-ink/80 outline-none">
+            {cameras.map((c, i) => <option key={c.deviceId || i} value={c.deviceId}>{c.label || `Camera ${i + 1}`}</option>)}
+          </select>
+        </div>
+      )}
     </div>
   )
 }

@@ -5,6 +5,7 @@
 
 import { jointAngles, jointVisibility, mirrorAngles } from '../core/pose/angles'
 import { compareAngles, type FrameComparison, type ScoreConfig, STRICT } from '../core/compare/similarity'
+import { LandmarkSmoother } from '../core/pose/smoothing'
 import type { Landmark } from '../core/pose/types'
 import type { PoseProvider } from '../providers/poseProvider'
 
@@ -27,7 +28,15 @@ export interface LiveResult {
   recording: boolean
   /** Whether a body was detected this frame (drives the "step into frame" hint). */
   bodyPresent: boolean
+  /** 0..1 average confidence the tracker has in the body it sees this frame. */
+  trackingConfidence: number
+  /** True when too few joints are confidently tracked to trust the score. */
+  lowConfidence: boolean
 }
+
+/** A joint must be at least this visible to count toward the score. Below it, we don't
+ *  penalize you for what the model cannot clearly see. */
+const MIN_JOINT_VISIBILITY = 0.5
 
 /** Detections per second. The webcam loop runs at display rate; detecting every frame
  *  wastes GPU/battery for no benefit, so we cap pose inference here. */
@@ -50,6 +59,9 @@ export class PracticeEngine {
   private rolling = 0
   private recording = false
   private takeAngles: number[][] = []
+  /** One-Euro smoothers that de-jitter the live landmarks for steadier scoring/overlay. */
+  private worldSmoother = new LandmarkSmoother({ minCutoff: 1.2, beta: 0.4 })
+  private imageSmoother = new LandmarkSmoother({ minCutoff: 1.5, beta: 0.5 })
   /** Last timestamp passed to MediaPipe; must strictly increase or it throws. */
   private lastTsMs = 0
   /** Wall-clock of the last detection, for FPS throttling. */
@@ -86,6 +98,8 @@ export class PracticeEngine {
     this.running = false
     if (this.rafId) cancelAnimationFrame(this.rafId)
     this.rafId = 0
+    this.worldSmoother.reset()
+    this.imageSmoother.reset()
   }
 
   /** Begin buffering the dancer's angles for a section take. */
@@ -121,33 +135,53 @@ export class PracticeEngine {
       rollingScore: this.rolling,
       recording: this.recording,
       bodyPresent: false,
+      trackingConfidence: 0,
+      lowConfidence: true,
     }
 
     if (this.webcam.readyState >= 2) {
       const pose = this.provider.detectLive(this.webcam, tsMs)
       if (pose) {
-        const liveAngles = jointAngles(pose.world)
-        const vis = jointVisibility(pose.world)
+        const tSec = tsMs / 1000
+        // Smooth the raw landmarks first so jitter doesn't shake the score or overlay.
+        const world = this.worldSmoother.smooth(pose.world, tSec)
+        const image = this.imageSmoother.smooth(pose.image, tSec)
+
+        const liveAngles = jointAngles(world)
+        const vis = jointVisibility(world)
+        // Confidence gating: drop joints the model can't clearly see (weight 0) so you
+        // aren't scored on them. Also derive an overall tracking-confidence read.
+        const weights = vis.map((v) => (v < MIN_JOINT_VISIBILITY ? 0 : v))
+        const confidentJoints = weights.reduce((n, w) => (w > 0 ? n + 1 : n), 0)
+        const trackingConfidence = vis.reduce((s, v) => s + v, 0) / vis.length
+        const lowConfidence = confidentJoints < Math.ceil(vis.length * 0.5)
+
         const ref = this.getReference()
 
         if (ref.angles) {
           const refAngles = ref.mirror ? mirrorAngles(ref.angles) : ref.angles
-          const cmp = compareAngles(refAngles, liveAngles, this.cfg, vis)
-          // Exponential moving average smooths the meter without lagging too far.
-          this.rolling = this.rolling * 0.8 + cmp.score * 0.2
+          const cmp = compareAngles(refAngles, liveAngles, this.cfg, weights)
+          // Only a confident frame moves the score or feeds a take; an unreliable read
+          // should neither punish nor flatter you.
           result = {
-            liveImage: pose.image,
+            liveImage: image,
             frame: cmp,
             rollingScore: this.rolling,
             recording: this.recording,
             bodyPresent: true,
+            trackingConfidence,
+            lowConfidence,
           }
-          if (this.recording) {
-            this.takeAngles.push(liveAngles)
-            if (this.takeAngles.length > MAX_TAKE_FRAMES) this.takeAngles.shift()
+          if (!lowConfidence) {
+            this.rolling = this.rolling * 0.8 + cmp.score * 0.2
+            result.rollingScore = this.rolling
+            if (this.recording) {
+              this.takeAngles.push(liveAngles)
+              if (this.takeAngles.length > MAX_TAKE_FRAMES) this.takeAngles.shift()
+            }
           }
         } else {
-          result = { ...result, liveImage: pose.image, bodyPresent: true }
+          result = { ...result, liveImage: image, bodyPresent: true, trackingConfidence, lowConfidence }
         }
       } else {
         // No body in frame — let the meter decay so it doesn't sit on a stale high score.

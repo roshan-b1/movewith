@@ -43,6 +43,21 @@ export interface ReferenceTrack {
   sections: Section[]
 }
 
+/** The segments + settings the dancer set up, saved so they're restored next time. */
+export interface PracticeSetup {
+  trimStart: number
+  trimEnd: number
+  /** Internal cut times between segments (the user's segmentation). */
+  moveBounds: number[]
+  moveSec?: number
+  /** Reps per segment; Infinity = loop till they move on. */
+  reps?: number
+  breakSecs?: number
+  cameraOn?: boolean
+  /** Segment indices skipped in practice (e.g. the instructor's explanation parts). */
+  skip?: number[]
+}
+
 /** Per-dance learning progress, persisted alongside the track. */
 export interface DanceProgress {
   trackId: string
@@ -50,6 +65,10 @@ export interface DanceProgress {
   bestSectionScores: Record<number, number>
   /** Highest section index unlocked (0-based). Section 0 is always unlocked. */
   unlockedThrough: number
+  /** Section indices the dancer has marked complete (won't auto-resurface). */
+  completed?: number[]
   /** Best full-run score 0..100, if attempted. */
   bestFullRun?: number
+  /** The dancer's saved trim + segments + settings for this track. */
+  setup?: PracticeSetup
 }

@@ -65,5 +65,19 @@ Strict layers so any piece can change without breaking the rest:
 - 🎬 **Music video mode**: pick a dancer to follow in a music video (uses pick-a-character),
   mirror them through the whole song instead of section-by-section, then play your performance
   back to you. The full-song, perform-it experience on top of the learn-it loop.
+- 🕺 **Just-Dance-style dancer**: replace the generated geometric silhouette with a rigged
+  2D character sprite that deforms with the tracked pose, so the instructor looks like a real
+  dancer moving with the body. Needs an art asset plus a skeletal rig/mesh-deform system.
+- 💃 **Built-in famous dances**: a library of well-known routines ready to learn out of the
+  box (Macarena, etc.), not just user uploads.
+- ⏭️ **Auto-detect the dancing parts**: in a tutorial video, tell when the instructor is actually
+  dancing vs talking/explaining, and let a mode jump straight to the dance segments (skip the talking).
+- 📊 **Practice report** (coaching mode only): after a full run with the song, show a report with the
+  timestamps where you matched the tutorial worst, so you know exactly which moments to drill next.
+- 🔁 **Smarter segment drilling**: per-segment replay count the user sets (or auto-repeat ~5×), a
+  manual "mark segment complete" so it stops resurfacing, then a full run-through "real practice"
+  mode with slow-down unlocked after you have learned the whole thing.
+- 🔄 **Front and back view**: show the instructor from the front and the back (toggle), so a
+  learner can follow whichever orientation matches how they are facing.
 - 🎚️ Studio-grade slow-mo via Signalsmith Stretch (WASM).
 - 🖥️ Desktop app wrapper (Tauri), accounts, sharing/leaderboards.
