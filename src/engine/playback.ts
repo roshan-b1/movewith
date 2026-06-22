@@ -127,10 +127,20 @@ export class PlaybackController {
 
   setLoop(region: LoopRegion | null) {
     this.loop = region
+    // If the loop covers (basically) the whole video, let the browser loop it natively —
+    // that's seamless, no seek-back decode stall. Sub-range loops still JS-seek at the edge.
+    if (this.video) {
+      this.video.loop = !!(region && region.startSec <= 0.15 && region.endSec >= this.durationSec - 0.15)
+    }
     if (region) {
       const t = this.getTime()
       if (t < region.startSec || t >= region.endSec) this.seek(region.startSec)
     }
+  }
+
+  /** True when the browser is handling the loop natively (whole-video loop). */
+  private get nativeLooping() {
+    return this.mode === 'video' && this.video ? this.video.loop : false
   }
 
   seek(t: number) {
@@ -195,10 +205,10 @@ export class PlaybackController {
         if (t >= s && t < e - 0.05) { this.seek(e); break }
       }
     }
-    if (this.loop) {
+    if (this.loop && !this.nativeLooping) {
       const t = this.getTime()
       if (!seeking && (t >= this.loop.endSec || t < this.loop.startSec)) this.seek(this.loop.startSec)
-    } else if (!seeking && this.getTime() >= this.durationSec) {
+    } else if (!this.loop && !seeking && this.getTime() >= this.durationSec) {
       this.pause()
       this.seek(this.durationSec)
       this.emit()
