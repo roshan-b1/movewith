@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "MoveWith — an AI dance tutorial that watches you through your webcam and coaches you section by section.",
+  "description": "MoveWith — a smart dance tutorial that watches you through your webcam and coaches you section by section.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

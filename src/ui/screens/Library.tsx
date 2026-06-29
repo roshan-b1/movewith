@@ -29,7 +29,7 @@ export function Library() {
       <header className="mb-10 animate-fade-up">
         <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-line bg-ink/[0.04] px-3 py-1 text-xs font-medium text-ink/60">
           <span className="h-1.5 w-1.5 rounded-full bg-good" />
-          Your AI dance helper · runs in your browser
+          Your smart dance helper · runs in your browser
         </div>
         <h1 className="font-display text-5xl font-bold leading-[0.95] tracking-tightish sm:text-7xl">
           Learn any dance,

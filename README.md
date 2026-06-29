@@ -1,6 +1,6 @@
 # MoveWith 🕺
 
-An AI dance tutorial that **moves with you**. Load (or upload) a routine, and MoveWith
+A smart dance tutorial that **moves with you**. Load (or upload) a routine, and MoveWith
 watches you through your webcam and coaches you **8-count by 8-count** — with slow-mo,
 section looping, mirror mode, and live per-limb feedback. No more pausing and rewinding:
 loop a section until it turns green, and the next one unlocks.
