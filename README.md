@@ -18,8 +18,13 @@ npm run dev      # open the printed http://localhost:5173 in a real browser tab
 > and the webcam (`getUserMedia`), which browsers suspend in hidden/headless tabs. Allow
 > camera access when prompted.
 
-On first open it generates a bundled **demo routine** (a synthetic instructor) so you can
-try the whole flow with zero setup. Use the upload box to learn your own tutorial videos.
+On first open it generates a bundled **demo routine** so you can try the whole flow with
+zero setup. Use the upload box to learn your own tutorial videos.
+
+The instructor is a **rigged 3D dancer** (Just-Dance style): a full 3D humanoid character
+performs every routine — the demo and anything you upload — driven frame-by-frame by the
+tracked pose. During practice on an uploaded video, toggle **🕺 3D dancer** to switch
+between the dancer and the original footage.
 
 **Controls:** Play/Pause (or **Spacebar**), slow-mo (1× / 0.75× / 0.5×, pitch-preserved),
 **Mirror**, **Loop** the current 8-count, and a per-section restart. A live **8-count number**
@@ -51,6 +56,8 @@ Strict layers so any piece can change without breaking the rest:
 - `src/providers/` — `PoseProvider` interface + the MediaPipe implementation (swap point).
 - `src/engine/` — orchestration: reference extraction, the live `PracticeEngine`, and the
   `PlaybackController` (slow-mo / loop / mirror; the swap point for higher-quality audio).
+- `src/ui/avatar/` — the rigged 3D dancer: a VRM humanoid (three.js) driven from stored
+  landmarks via Kalidokit, with slerp smoothing between pose frames.
 - `src/storage/` — IndexedDB (tracks, video blobs, progress).
 - `src/state/` — Zustand session store.
 - `src/ui/` — React screens & components (no business logic).
@@ -65,9 +72,10 @@ Strict layers so any piece can change without breaking the rest:
 - 🎬 **Music video mode**: pick a dancer to follow in a music video (uses pick-a-character),
   mirror them through the whole song instead of section-by-section, then play your performance
   back to you. The full-song, perform-it experience on top of the learn-it loop.
-- 🕺 **Just-Dance-style dancer**: replace the generated geometric silhouette with a rigged
-  2D character sprite that deforms with the tracked pose, so the instructor looks like a real
-  dancer moving with the body. Needs an art asset plus a skeletal rig/mesh-deform system.
+- ✅ **Just-Dance-style dancer** — shipped, and upgraded from the planned 2D sprite to a
+  full rigged **3D** humanoid (VRM + three.js + Kalidokit) that performs any routine from
+  its stored landmarks. Next: an avatar picker (multiple characters), hand/finger detail,
+  and richer stage presentation.
 - 💃 **Built-in famous dances**: a library of well-known routines ready to learn out of the
   box (Macarena, etc.), not just user uploads.
 - ⏭️ **Auto-detect the dancing parts**: in a tutorial video, tell when the instructor is actually

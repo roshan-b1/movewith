@@ -30,9 +30,11 @@ deliberate "do later" so the current app stays focused.
 
 ## Visual / onboarding
 
-- **Just-Dance-style rigged dancer.** Replace the generated geometric silhouette
-  (`drawHumanFigure`) with a rigged 2D character sprite that deforms with the tracked pose.
-  Needs an art asset + skeletal rig.
+- ✅ **Just-Dance-style rigged dancer — DONE** (and upgraded to full 3D). A rigged VRM
+  humanoid rendered with three.js, driven per-frame from any routine's stored landmarks via
+  Kalidokit (`src/ui/avatar/InstructorAvatar.ts`). Works for the demo and every upload.
+  Follow-ups: avatar picker (multiple characters), hand/finger detail, hip-travel from
+  image-space landmarks for uploads, richer stage (shadows, lighting themes).
 - **Onboarding tutorial video.** A short "watch this first" walkthrough that plays for
   first-time users before they start.
 

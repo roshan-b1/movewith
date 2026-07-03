@@ -4,7 +4,7 @@
 
 import { create } from 'zustand'
 import type { ReferenceTrack, DanceProgress } from '../core/reference/types'
-import { generateDemoDance, DEMO_TRACK_ID } from '../core/demo/demoDance'
+import { generateDemoDance, DEMO_TRACK_ID, OLD_DEMO_TRACK_IDS } from '../core/demo/demoDance'
 import { extractReferenceFromVideo, type ExtractProgress } from '../engine/extractReference'
 import { getPoseProvider } from '../providers/instance'
 import {
@@ -57,6 +57,10 @@ export const useSession = create<SessionState>((set, get) => ({
     set({ status: 'loading', error: null })
     try {
       // Ensure the bundled demo dance exists so the app is usable on first open.
+      // Older demo versions are replaced (the generator's output changed).
+      for (const old of OLD_DEMO_TRACK_IDS) {
+        if (await getTrack(old)) await deleteTrack(old)
+      }
       const existing = await getTrack(DEMO_TRACK_ID)
       if (!existing) {
         await saveTrack(generateDemoDance(Date.now()))

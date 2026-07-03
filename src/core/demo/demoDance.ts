@@ -112,24 +112,28 @@ function poseFromParams(p: PoseParams): Landmark[] {
     for (const idx of set) out[idx] = L(out[w]!.x, out[w]!.y + 0.04)
   }
 
-  // Legs. Thigh points down; knee bend swings shin backward (toward -y at the foot).
-  const legChain = (hip: { x: number; y: number }, knee: number, sign: 1 | -1) => {
-    const thighDir = { x: 0, y: 1 }
-    const kneePt = { x: hip.x + thighDir.x * THIGH, y: hip.y + thighDir.y * THIGH }
-    const shinDir = rot(thighDir, -sign * knee) // bend
-    const anklePt = { x: kneePt.x + shinDir.x * SHIN, y: kneePt.y + shinDir.y * SHIN }
+  // Legs. A knee bend is a real squat in 3D: the thigh pitches forward (toward the camera,
+  // -z in BlazePose world space) and the shin pitches back under the body, so the bend
+  // reads from the front — like an actual dancer — rather than swinging sideways in-plane.
+  // The hip-knee-ankle angle magnitude is unchanged, so scoring math is unaffected.
+  const legChain = (hip: { x: number; y: number }, knee: number) => {
+    const half = (knee / 2) * D2R
+    const c = Math.cos(half)
+    const s = Math.sin(half)
+    const kneePt = { x: hip.x, y: hip.y + c * THIGH, z: -s * THIGH }
+    const anklePt = { x: hip.x, y: kneePt.y + c * SHIN, z: kneePt.z + s * SHIN }
     return { kneePt, anklePt }
   }
-  const ll = legChain(lHip, p.kneeL, 1)
-  const rl = legChain(rHip, p.kneeR, -1)
-  out[LM.leftKnee] = L(ll.kneePt.x, ll.kneePt.y)
-  out[LM.leftAnkle] = L(ll.anklePt.x, ll.anklePt.y)
-  out[LM.rightKnee] = L(rl.kneePt.x, rl.kneePt.y)
-  out[LM.rightAnkle] = L(rl.anklePt.x, rl.anklePt.y)
-  out[LM.leftHeel] = L(ll.anklePt.x, ll.anklePt.y + 0.03)
-  out[LM.rightHeel] = L(rl.anklePt.x, rl.anklePt.y + 0.03)
-  out[LM.leftFootIndex] = L(ll.anklePt.x + 0.08, ll.anklePt.y + 0.04)
-  out[LM.rightFootIndex] = L(rl.anklePt.x - 0.08, rl.anklePt.y + 0.04)
+  const ll = legChain(lHip, p.kneeL)
+  const rl = legChain(rHip, p.kneeR)
+  out[LM.leftKnee] = L(ll.kneePt.x, ll.kneePt.y, ll.kneePt.z)
+  out[LM.leftAnkle] = L(ll.anklePt.x, ll.anklePt.y, ll.anklePt.z)
+  out[LM.rightKnee] = L(rl.kneePt.x, rl.kneePt.y, rl.kneePt.z)
+  out[LM.rightAnkle] = L(rl.anklePt.x, rl.anklePt.y, rl.anklePt.z)
+  out[LM.leftHeel] = L(ll.anklePt.x, ll.anklePt.y + 0.03, ll.anklePt.z + 0.02)
+  out[LM.rightHeel] = L(rl.anklePt.x, rl.anklePt.y + 0.03, rl.anklePt.z + 0.02)
+  out[LM.leftFootIndex] = L(ll.anklePt.x + 0.08, ll.anklePt.y + 0.04, ll.anklePt.z - 0.05)
+  out[LM.rightFootIndex] = L(rl.anklePt.x - 0.08, rl.anklePt.y + 0.04, rl.anklePt.z - 0.05)
 
   return out
 }
@@ -205,7 +209,10 @@ function paramsAtBeat(beat: number): PoseParams {
   return last.params
 }
 
-export const DEMO_TRACK_ID = 'demo-routine-v1'
+// v2: knee bends became real sagittal squats (3D) for the rigged dancer. Bumping the id
+// regenerates the stored track for existing users; old versions are cleaned up on init.
+export const DEMO_TRACK_ID = 'demo-routine-v2'
+export const OLD_DEMO_TRACK_IDS = ['demo-routine-v1']
 
 /** Build the bundled demo ReferenceTrack. `createdAt` is injected for determinism. */
 export function generateDemoDance(createdAt: number, fps = 24): ReferenceTrack {

@@ -16,6 +16,7 @@ import {
 } from '../../core/reference/segment'
 import { VoiceController, type VoiceCommand } from '../../engine/voice'
 import { drawSkeleton, drawHumanFigure, worldProjector, containProjector } from '../components/drawSkeleton'
+import { InstructorAvatar, type AvatarStatus } from '../avatar/InstructorAvatar'
 import { AccuracyMeter } from '../components/AccuracyMeter'
 import { Scrubber } from '../components/Scrubber'
 import { MoveEditor } from '../components/MoveEditor'
@@ -102,6 +103,9 @@ export function Practice() {
   const [activeCam, setActiveCam] = useState<string | null>(null)
   const [voiceOn, setVoiceOn] = useState(false)
   const voiceSupported = useMemo(() => VoiceController.isSupported(), [])
+  // 3D dancer: on by default; falls back to the classic 2D drawing if the model fails.
+  const [avatar3d, setAvatar3d] = useState(true)
+  const [avatarStatus, setAvatarStatus] = useState<AvatarStatus>('loading')
 
   const moves = useMemo(() => buildMovesFromBounds(trimStart, trimEnd, moveBounds), [trimStart, trimEnd, moveBounds])
   const ticks = useMemo(() => moveTicks(moves), [moves])
@@ -110,6 +114,8 @@ export function Practice() {
   const instructorVideoRef = useRef<HTMLVideoElement | null>(null)
   const instructorCanvasRef = useRef<HTMLCanvasElement>(null)
   const instructorOverlayRef = useRef<HTMLCanvasElement>(null)
+  const avatarCanvasRef = useRef<HTMLCanvasElement>(null)
+  const avatarRef = useRef<InstructorAvatar | null>(null)
   // Driven imperatively from the playback tick so the whole screen doesn't re-render 60×/s.
   const scrubPlayheadRef = useRef<HTMLDivElement>(null)
   const moveEditorPlayheadRef = useRef<HTMLDivElement>(null)
@@ -156,6 +162,11 @@ export function Practice() {
     if (pb) pb.seek(pb.getTime())
   }, [mirror])
   useEffect(() => void (phaseRef.current = phase), [phase])
+  // Toggling the 3D dancer swaps render paths — force a redraw so it shows while paused.
+  useEffect(() => {
+    const pb = playbackRef.current
+    if (pb) pb.seek(pb.getTime())
+  }, [avatar3d])
   useEffect(() => { trimStartRef.current = trimStart; trimEndRef.current = trimEnd }, [trimStart, trimEnd])
   // Keep skip state + the controller's skip ranges (for full-song playback) in sync.
   useEffect(() => {
@@ -189,6 +200,32 @@ export function Practice() {
     engineRef.current?.setConfig(cfg)
   }, [rate])
 
+  // When to show the rigged 3D dancer: whenever there are landmark frames to drive it.
+  // Demo routine: always (it replaces the old geometric silhouette). Uploaded videos: during
+  // practice, when the dancer toggle is on (the real video stays for segment editing).
+  // If the model ever fails to load we quietly fall back to the classic 2D drawing.
+  const hasFrames = track.frames.length > 0
+  const showAvatar =
+    hasFrames && avatarStatus !== 'error' && (videoUrl ? phase === 'go' && avatar3d : phase !== 'setup')
+
+  // 3D dancer lifecycle: create it when its canvas is on screen, tear down when hidden.
+  useEffect(() => {
+    if (!showAvatar) return
+    const canvas = avatarCanvasRef.current
+    if (!canvas) return
+    const inst = new InstructorAvatar(canvas, (s) => {
+      setAvatarStatus(s)
+      if (s === 'ready') {
+        // Push the current frame so the dancer strikes the right pose even while paused.
+        const pb = playbackRef.current
+        if (pb) pb.seek(pb.getTime())
+      }
+    })
+    avatarRef.current = inst
+    return () => { avatarRef.current = null; inst.dispose() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAvatar, track.id])
+
   // Playback + instructor draw loop
   useEffect(() => {
     const pb = new PlaybackController(duration)
@@ -207,7 +244,16 @@ export function Practice() {
       if (now - lastDrawMs < 33) return
       lastDrawMs = now
       const i = nearestFrameIndex(track.frames, t)
-      const frame = i >= 0 ? track.frames[i] : null
+      const frame = (i >= 0 ? track.frames[i] : null) ?? null
+      // 3D dancer active: feed it the frame (mirror is a CSS flip on its canvas) and keep
+      // the 2D layers clean so nothing stale shows when toggling back.
+      const avatar = avatarRef.current
+      if (avatar) {
+        avatar.setFrame(frame)
+        const overlay = instructorOverlayRef.current
+        if (overlay) overlay.getContext('2d')?.clearRect(0, 0, overlay.width, overlay.height)
+        return
+      }
       if (videoUrl) {
         const canvas = instructorOverlayRef.current
         const video = instructorVideoRef.current
@@ -866,10 +912,32 @@ export function Practice() {
               />
             </>
           ) : (
-            <canvas
-              ref={instructorCanvasRef}
-              className="absolute inset-0 h-full w-full"
-            />
+            !showAvatar && (
+              <canvas
+                ref={instructorCanvasRef}
+                className="absolute inset-0 h-full w-full"
+              />
+            )
+          )}
+          {/* Rigged 3D dancer. Sits above the video (which keeps playing for the music) on
+              an opaque stage backdrop. Mirror is a CSS flip of the WebGL canvas. */}
+          {showAvatar && (
+            <div
+              className="absolute inset-0 z-10"
+              style={{ background: 'radial-gradient(ellipse at 50% 42%, #353b58 0%, #171a28 62%, #0c0e18 100%)' }}
+            >
+              <canvas
+                ref={avatarCanvasRef}
+                className="h-full w-full"
+                style={{ transform: mirror ? 'scaleX(-1)' : undefined }}
+              />
+              {avatarStatus === 'loading' && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                  <div className="h-7 w-7 animate-spin rounded-full border-2 border-cream/25 border-t-cream" />
+                  <p className="text-xs text-cream/60">Loading your dancer…</p>
+                </div>
+              )}
+            </div>
           )}
         </div>
         {cameraOn && (
@@ -1004,6 +1072,15 @@ export function Practice() {
               ))}
             </div>
             <button onClick={() => setMirror((m) => !m)} className={mirror ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}>🪞 Mirror</button>
+            {videoUrl && hasFrames && avatarStatus !== 'error' && (
+              <button
+                onClick={() => setAvatar3d((v) => !v)}
+                className={avatar3d ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}
+                title="Follow a 3D dancer instead of the video"
+              >
+                🕺 3D dancer
+              </button>
+            )}
             <button onClick={playAll} className={fullRun ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn} title="Practice the whole song start to finish">▶ Full song</button>
             <button onClick={editSegments} className={btn} title="Go back and edit the segments">✎ Edit segments</button>
             {voiceSupported && (
