@@ -221,6 +221,9 @@ export function Practice() {
         if (pb) pb.seek(pb.getTime())
       }
     })
+    // Camera-relative stage travel (walking toward camera / across frame) is measured
+    // against the whole routine's median body size — calibrate before frames stream in.
+    inst.calibrate(trackRef.current.frames)
     avatarRef.current = inst
     return () => { avatarRef.current = null; inst.dispose() }
     // eslint-disable-next-line react-hooks/exhaustive-deps

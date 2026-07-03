@@ -38,9 +38,12 @@ deliberate "do later" so the current app stays focused.
   foot planting. NOTES: Kalidokit's outputs are mirror-view — limbs swap sides on
   application (calibrated empirically; don't "fix" without re-testing known poses). The
   Y Bot GLB's usable T-pose clip is named "mixamo.com"; its "T-Pose" clip is an empty
-  stub, and stopping the mixer would reset the pose. Follow-ups: avatar picker (multiple
-  characters to choose from), hand/finger detail, hip-travel from image-space landmarks
-  for uploads, lighting themes.
+  stub, and stopping the mixer would reset the pose. Also done: camera-relative stage
+  travel for uploads (walks toward/away + across the stage, from image-space torso size
+  vs the routine median — `core/pose/travel.ts`, unit-tested), relaxed finger articulation,
+  and data-driven wrist rotation (gated off the demo's stub hand landmarks). Follow-ups:
+  avatar picker (multiple characters to choose from), live per-finger tracking (needs a
+  hand-landmark model, not pose), lighting themes.
 - **Onboarding tutorial video.** A short "watch this first" walkthrough that plays for
   first-time users before they start.
 

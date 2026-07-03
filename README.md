@@ -24,8 +24,10 @@ zero setup. Use the upload box to learn your own tutorial videos.
 The instructor is a **rigged 3D dancer** (Just-Dance style): a matte-black male silhouette
 mannequin on a rim-lit stage performs every routine — the demo and anything you upload —
 driven frame-by-frame by the tracked pose. Full-body mechanics: head and neck follow the
-tracked face, shoulders shrug naturally as arms rise, feet stay planted on the stage, and
-he casts a real-time shadow. During practice on an uploaded video, toggle **🕺 3D dancer**
+tracked face, shoulders shrug naturally as arms rise, wrists follow the tracked hands,
+fingers hold a relaxed dancer's curl, feet stay planted on the stage, he casts a real-time
+shadow, and on uploaded videos he travels the stage with the instructor — side to side AND
+toward/away from the camera. During practice on an uploaded video, toggle **🕺 3D dancer**
 to switch between the dancer and the original footage.
 
 **Controls:** Play/Pause (or **Spacebar**), slow-mo (1× / 0.75× / 0.5×, pitch-preserved),

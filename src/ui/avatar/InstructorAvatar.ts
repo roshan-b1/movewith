@@ -11,6 +11,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import * as Kalidokit from 'kalidokit'
 import { LM, type Landmark } from '../../core/pose/types'
+import { torsoAnchor, travelBaseline, stageTravel, type TorsoAnchor } from '../../core/pose/travel'
 import type { ReferenceFrame } from '../../core/reference/types'
 
 export type AvatarStatus = 'loading' | 'ready' | 'error'
@@ -42,8 +43,21 @@ const BONE_MAP = {
   rightLowerLeg: 'mixamorig:RightLeg',
   leftFoot: 'mixamorig:LeftFoot',
   rightFoot: 'mixamorig:RightFoot',
+  leftHand: 'mixamorig:LeftHand',
+  rightHand: 'mixamorig:RightHand',
 } as const
 type BoneKey = keyof typeof BONE_MAP
+
+// Relaxed finger curl (degrees per segment 1→3). A dancer's hands are soft, not the rig's
+// stiff splayed T-pose fingers. Applied once at load; landmark data is too coarse to
+// articulate individual fingers live without jitter.
+const FINGER_CURL: Record<string, [number, number, number]> = {
+  Thumb: [4, 7, 9],
+  Index: [10, 18, 14],
+  Middle: [13, 21, 16],
+  Ring: [15, 23, 17],
+  Pinky: [17, 25, 19],
+}
 
 interface KEuler {
   x: number
@@ -116,6 +130,8 @@ export class InstructorAvatar {
   private tmpQuat = new THREE.Quaternion()
   private tmpQuat2 = new THREE.Quaternion()
   private tmpMat = new THREE.Matrix4()
+  /** The routine's median torso size/position in image space — see calibrate(). */
+  private travelBase: TorsoAnchor | null = null
 
   constructor(canvas: HTMLCanvasElement, onStatus: (s: AvatarStatus) => void) {
     this.canvas = canvas
@@ -141,12 +157,13 @@ export class InstructorAvatar {
     key.position.set(0.8, 3.2, 3.0)
     key.castShadow = true
     key.shadow.mapSize.set(1024, 1024)
-    key.shadow.camera.left = -1.6
-    key.shadow.camera.right = 1.6
-    key.shadow.camera.top = 2.4
-    key.shadow.camera.bottom = -0.4
+    // Generous bounds: the dancer can travel ±1m laterally and toward/away from camera.
+    key.shadow.camera.left = -2.4
+    key.shadow.camera.right = 2.4
+    key.shadow.camera.top = 2.8
+    key.shadow.camera.bottom = -1.6
     key.shadow.camera.near = 0.5
-    key.shadow.camera.far = 10
+    key.shadow.camera.far = 12
     key.shadow.bias = -0.0004
     this.scene.add(key)
     const rimPink = new THREE.DirectionalLight(0xff2e88, 4.5)
@@ -172,14 +189,15 @@ export class InstructorAvatar {
     g.fillRect(0, 0, 256, 256)
     const floorTex = new THREE.CanvasTexture(grad)
     floorTex.colorSpace = THREE.SRGBColorSpace
+    // Sized so the dancer stays on the stage across the full travel range (±1m).
     const floor = new THREE.Mesh(
-      new THREE.CircleGeometry(1.25, 64),
+      new THREE.CircleGeometry(1.55, 64),
       new THREE.MeshBasicMaterial({ map: floorTex }),
     )
     floor.rotation.x = -Math.PI / 2
     this.scene.add(floor)
     const shadowCatcher = new THREE.Mesh(
-      new THREE.CircleGeometry(1.25, 64),
+      new THREE.CircleGeometry(1.55, 64),
       new THREE.ShadowMaterial({ opacity: 0.45 }),
     )
     shadowCatcher.rotation.x = -Math.PI / 2
@@ -187,7 +205,7 @@ export class InstructorAvatar {
     shadowCatcher.receiveShadow = true
     this.scene.add(shadowCatcher)
     const ring = new THREE.Mesh(
-      new THREE.RingGeometry(1.19, 1.25, 96),
+      new THREE.RingGeometry(1.48, 1.55, 96),
       new THREE.MeshBasicMaterial({
         color: 0xff2e88,
         transparent: true,
@@ -273,6 +291,25 @@ export class InstructorAvatar {
     }
     if (!this.bones.has('hips')) throw new Error('mannequin rig not found')
 
+    // Soften the hands: bake a relaxed curl into every finger chain (palms face down in
+    // the T-pose, so curling is a world-z rotation — negative for the left hand's +x
+    // fingers, positive for the right's). One-time pose; fingers aren't driven live.
+    const D2R = Math.PI / 180
+    for (const side of ['Left', 'Right'] as const) {
+      const sign = side === 'Left' ? -1 : 1
+      for (const [finger, curls] of Object.entries(FINGER_CURL)) {
+        for (let seg = 1; seg <= 3; seg++) {
+          const name = `mixamorig:${side}Hand${finger}${seg}`
+          const node = byName.get(name) ?? byName.get(name.replace(':', ''))
+          if (!node?.parent) continue
+          const rw = node.getWorldQuaternion(new THREE.Quaternion())
+          const pw = node.parent.getWorldQuaternion(new THREE.Quaternion())
+          this.tmpQuat.setFromEuler(this.tmpEuler.set(0, 0, sign * curls[seg - 1]! * D2R, 'XYZ'))
+          node.quaternion.copy(pw.invert().multiply(this.tmpQuat).multiply(rw))
+        }
+      }
+    }
+
     // NORMALIZE SCALE + POSITION from the SKELETON (bounding boxes lie for skinned meshes:
     // they report bind-pose geometry, not the posed bones). Mixamo exports are often in
     // centimeters and/or offset from the origin — measure head→foot from bone positions,
@@ -295,6 +332,16 @@ export class InstructorAvatar {
     this.scene.add(root)
     this.root = root
     this.model = model
+  }
+
+  /**
+   * Calibrate camera-relative stage travel against the whole routine. World landmarks are
+   * hip-centered, so walking toward the camera / across the frame only shows in the
+   * IMAGE-SPACE landmarks — travel is measured against the routine's median torso size
+   * and position. No-op for routines without image landmarks (the synthetic demo).
+   */
+  calibrate(frames: ReadonlyArray<{ image?: Landmark[] }>) {
+    this.travelBase = travelBaseline(frames)
   }
 
   /**
@@ -351,6 +398,23 @@ export class InstructorAvatar {
     this.setRot('leftLowerLeg', pose.RightLowerLeg)
     this.setRot('rightUpperLeg', pose.LeftUpperLeg)
     this.setRot('rightLowerLeg', pose.LeftLowerLeg)
+
+    // WRISTS — z only (the Kalidokit-demo convention: x/y from these landmarks is mostly
+    // noise), gated on the hand landmarks being real: index and pinky must be distinct
+    // points, which the synthetic demo's stub hands are not. Same side-swap as the arms;
+    // Kalidokit's LeftHand comes from the person's right-hand landmarks.
+    const handOK = (i: number, p: number) => {
+      const a = lm3d[i]
+      const b = lm3d[p]
+      return !!a && !!b && Math.hypot(a.x - b.x, a.y - b.y, (a.z ?? 0) - (b.z ?? 0)) > 0.008
+    }
+    const wristZ = (e: KEuler): KEuler => ({
+      x: 0,
+      y: 0,
+      z: THREE.MathUtils.clamp(e.z, -0.7, 0.7),
+    })
+    if (handOK(LM.leftIndex, LM.leftPinky)) this.setRot('leftHand', wristZ(pose.RightHand), 0.6)
+    if (handOK(LM.rightIndex, LM.rightPinky)) this.setRot('rightHand', wristZ(pose.LeftHand), 0.6)
     // Hands are skipped: hand landmarks are too coarse in dance footage (and synthetic in
     // the demo), so driving wrists from them adds jitter without adding readability.
 
@@ -366,17 +430,30 @@ export class InstructorAvatar {
     this.solveShrug('leftShoulder', lm3d[LM.leftShoulder], lm3d[LM.leftElbow], 1)
     this.solveShrug('rightShoulder', lm3d[LM.rightShoulder], lm3d[LM.rightElbow], -1)
 
-    // Body translation (side-steps, squats) from the raw world hip midpoint. World space is
-    // hip-centered for real videos (≈0, harmless) but the demo moves its hips — and any
-    // motion here reads as the dancer traveling on the stage. World y is down; three.js up.
+    // Body translation on the stage, from two complementary signals:
+    // • world hip midpoint — side-steps and crouches for the synthetic demo (real videos
+    //   are hip-centered, ≈0). World y is down; three.js up.
+    // • image-space travel — real videos ONLY: the instructor walking toward/away from
+    //   the camera (apparent torso size) and across the frame (hip midpoint), measured
+    //   against the routine's calibrated median. See calibrate() / core/pose/travel.ts.
     if (lh && rh) {
       const hx = (lh.x + rh.x) / 2
       const hy = (lh.y + rh.y) / 2
       if (Number.isFinite(hx) && Number.isFinite(hy)) {
+        let tx = 0
+        let tz = 0
+        if (this.travelBase) {
+          const anchor = torsoAnchor(frame.image)
+          if (anchor) {
+            const t = stageTravel(anchor, this.travelBase)
+            tx = t.x
+            tz = t.z
+          }
+        }
         this.posTarget.set(
-          THREE.MathUtils.clamp(hx, -0.6, 0.6),
+          THREE.MathUtils.clamp(hx, -0.6, 0.6) + tx,
           THREE.MathUtils.clamp(-hy, -0.45, 0.2),
-          0,
+          tz,
         )
       }
     }
