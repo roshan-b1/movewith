@@ -28,6 +28,10 @@ const BONE_MAP = {
   hips: 'mixamorig:Hips',
   spine: 'mixamorig:Spine',
   chest: 'mixamorig:Spine1',
+  neck: 'mixamorig:Neck',
+  head: 'mixamorig:Head',
+  leftShoulder: 'mixamorig:LeftShoulder',
+  rightShoulder: 'mixamorig:RightShoulder',
   leftUpperArm: 'mixamorig:LeftArm',
   leftLowerArm: 'mixamorig:LeftForeArm',
   rightUpperArm: 'mixamorig:RightArm',
@@ -36,6 +40,8 @@ const BONE_MAP = {
   leftLowerLeg: 'mixamorig:LeftLeg',
   rightUpperLeg: 'mixamorig:RightUpLeg',
   rightLowerLeg: 'mixamorig:RightLeg',
+  leftFoot: 'mixamorig:LeftFoot',
+  rightFoot: 'mixamorig:RightFoot',
 } as const
 type BoneKey = keyof typeof BONE_MAP
 
@@ -97,6 +103,8 @@ export class InstructorAvatar {
   private camera: THREE.PerspectiveCamera
   private lastMs = performance.now()
   private model: THREE.Object3D | null = null
+  /** Outer pivot that carries the stage translation (side-steps, crouch). */
+  private root: THREE.Group | null = null
   private bones = new Map<BoneKey, DrivenBone>()
   private raf = 0
   private disposed = false
@@ -106,6 +114,8 @@ export class InstructorAvatar {
   private posTarget = new THREE.Vector3()
   private tmpEuler = new THREE.Euler()
   private tmpQuat = new THREE.Quaternion()
+  private tmpQuat2 = new THREE.Quaternion()
+  private tmpMat = new THREE.Matrix4()
 
   constructor(canvas: HTMLCanvasElement, onStatus: (s: AvatarStatus) => void) {
     this.canvas = canvas
@@ -208,15 +218,33 @@ export class InstructorAvatar {
   private async load() {
     const gltf = await new GLTFLoader().loadAsync(MODEL_URL)
     const model = gltf.scene
-    // The whole figure is one sleek OBSIDIAN SILHOUETTE: glossy near-black everywhere,
-    // outlined by the colored rim lights — the classic dance-silhouette look.
+    // The retarget math needs the captured rest pose to be a clean T-POSE. Some rigs ship
+    // with animation clips and a non-T default pose — if the file provides an explicit
+    // T-pose clip, pose the skeleton with it before capturing rest quaternions.
+    // Prefer an explicit T-pose clip; Mixamo static-pose exports are named "mixamo.com".
+    // Some files also ship an EMPTY "T-Pose" stub (0 tracks) — require real tracks, and
+    // among matches take the shortest (a static pose clip is a fraction of a second).
+    const tPose = (gltf.animations ?? [])
+      .filter((c) => c.tracks.length > 0 && /t[- ]?pose|mixamo\.com/i.test(c.name))
+      .sort((a, b) => a.duration - b.duration)[0]
+    if (tPose) {
+      const mixer = new THREE.AnimationMixer(model)
+      mixer.clipAction(tPose).play()
+      mixer.update(0)
+      // Deliberately NOT stopping the action: stopAllAction() would restore the nodes to
+      // their pre-clip default pose. The mixer is simply dropped; the T-pose values stay.
+    }
+    // The whole figure is one MATTE BLACK SILHOUETTE — soft charcoal body, no chrome —
+    // with just enough sheen for the colored rim lights to define the edges. The classic
+    // dance-silhouette look, in 3D.
     const silhouette = new THREE.MeshPhysicalMaterial({
-      color: 0x0d0f1a,
-      metalness: 0.75,
-      roughness: 0.35,
-      clearcoat: 0.7,
-      clearcoatRoughness: 0.22,
+      color: 0x0c0e14,
+      metalness: 0.1,
+      roughness: 0.6,
+      clearcoat: 0.3,
+      clearcoatRoughness: 0.55,
     })
+    silhouette.envMapIntensity = 0.35
     model.traverse((o) => {
       // Skinned bounds are wrong mid-dance; never cull the dancer's limbs.
       o.frustumCulled = false
@@ -245,8 +273,27 @@ export class InstructorAvatar {
     }
     if (!this.bones.has('hips')) throw new Error('mannequin rig not found')
 
+    // NORMALIZE SCALE + POSITION from the SKELETON (bounding boxes lie for skinned meshes:
+    // they report bind-pose geometry, not the posed bones). Mixamo exports are often in
+    // centimeters and/or offset from the origin — measure head→foot from bone positions,
+    // scale to human height, put the hips over the origin and the feet on the floor.
+    const headPos = this.bones.get('head')?.node.getWorldPosition(new THREE.Vector3())
+    const footPos = this.bones.get('leftFoot')?.node.getWorldPosition(new THREE.Vector3())
+    const hipsPos = this.bones.get('hips')!.node.getWorldPosition(new THREE.Vector3())
+    if (headPos && footPos) {
+      const span = headPos.y - footPos.y
+      if (span > 0.01) {
+        const s = 1.62 / span // head BONE sits below the crown; ≈1.75m figure overall
+        model.scale.setScalar(s)
+        model.position.set(-hipsPos.x * s, -(footPos.y - 0.035 * span) * s, -hipsPos.z * s)
+      }
+    }
+
     if (this.disposed) return
-    this.scene.add(model)
+    const root = new THREE.Group()
+    root.add(model)
+    this.scene.add(root)
+    this.root = root
     this.model = model
   }
 
@@ -307,6 +354,18 @@ export class InstructorAvatar {
     // Hands are skipped: hand landmarks are too coarse in dance footage (and synthetic in
     // the demo), so driving wrists from them adds jitter without adding readability.
 
+    // HEAD + NECK — solved directly from the face landmarks (Kalidokit's Pose solver
+    // doesn't cover the head, and head motion is what sells the figure as human).
+    // Build the head's world basis from the ear line (lateral) and the eyes-vs-ears
+    // offset (forward). Landmark space is x-right / y-down / z-toward-camera-negative;
+    // three.js is x-right / y-up / z-toward-camera-positive.
+    this.solveHead(lm3d)
+
+    // SHOULDERS — a natural shrug assist: clavicles rise as the arm goes past horizontal.
+    // Person's left arm drives the mannequin's left clavicle (true face-on view).
+    this.solveShrug('leftShoulder', lm3d[LM.leftShoulder], lm3d[LM.leftElbow], 1)
+    this.solveShrug('rightShoulder', lm3d[LM.rightShoulder], lm3d[LM.rightElbow], -1)
+
     // Body translation (side-steps, squats) from the raw world hip midpoint. World space is
     // hip-centered for real videos (≈0, harmless) but the demo moves its hips — and any
     // motion here reads as the dancer traveling on the stage. World y is down; three.js up.
@@ -321,6 +380,67 @@ export class InstructorAvatar {
         )
       }
     }
+  }
+
+  /** Head/neck orientation from ears + eyes, split neck 35% / head 65%. */
+  private solveHead(lm: Landmark[]) {
+    const le = lm[LM.leftEar]
+    const re = lm[LM.rightEar]
+    const ley = lm[LM.leftEye]
+    const rey = lm[LM.rightEye]
+    if (!le || !re || !ley || !rey) return
+    // Lateral axis: right ear → left ear (person's left = +x when facing the camera).
+    const R = new THREE.Vector3(le.x - re.x, -(le.y - re.y), -((le.z ?? 0) - (re.z ?? 0)))
+    // Forward axis: ear midpoint → eye midpoint (eyes sit in front of ears, at ear height).
+    const F = new THREE.Vector3(
+      (ley.x + rey.x - le.x - re.x) / 2,
+      -(ley.y + rey.y - le.y - re.y) / 2,
+      -((ley.z ?? 0) + (rey.z ?? 0) - (le.z ?? 0) - (re.z ?? 0)) / 2,
+    )
+    if (R.lengthSq() < 1e-6 || F.lengthSq() < 1e-6) return
+    R.normalize()
+    F.normalize()
+    // Guard: only drive the head while it faces roughly forward — degenerate/rear-facing
+    // face landmarks (occlusions, spins) would otherwise whip the head around.
+    if (F.z < 0.15) return
+    const U = new THREE.Vector3().crossVectors(F, R)
+    if (U.lengthSq() < 1e-6 || U.y < 0.2) return
+    U.normalize()
+    const R2 = new THREE.Vector3().crossVectors(U, F).normalize()
+    this.tmpMat.makeBasis(R2, U, F)
+    this.tmpQuat.setFromRotationMatrix(this.tmpMat)
+    if (!Number.isFinite(this.tmpQuat.x + this.tmpQuat.w)) return
+    // Distribute the rotation: a real head turn is shared between neck and head.
+    this.setRotQuat('neck', this.tmpQuat, 0.35)
+    this.setRotQuat('head', this.tmpQuat, 0.65)
+  }
+
+  /** Clavicle rise once the upper arm passes horizontal — reads as a natural shrug. */
+  private solveShrug(key: BoneKey, shoulder: Landmark | undefined, elbow: Landmark | undefined, sign: 1 | -1) {
+    if (!shoulder || !elbow) return
+    const vx = elbow.x - shoulder.x
+    const vy = elbow.y - shoulder.y // y down
+    const len = Math.hypot(vx, vy)
+    if (len < 1e-4) return
+    // 0 = arm straight down, 180 = straight up.
+    const elev = (Math.acos(THREE.MathUtils.clamp(vy / len, -1, 1)) * 180) / Math.PI
+    const amt = THREE.MathUtils.clamp((elev - 100) / 80, 0, 1) * (12 * Math.PI / 180)
+    // +z about world rotates the +x (left) side up; mirror for the right clavicle.
+    this.tmpQuat.setFromEuler(this.tmpEuler.set(0, 0, sign * amt, 'XYZ'))
+    this.setRotQuat(key, this.tmpQuat, 1)
+  }
+
+  /** Apply a world-aligned rotation (optionally scaled toward identity) to a bone target. */
+  private setRotQuat(key: BoneKey, q: THREE.Quaternion, weight: number) {
+    const bone = this.bones.get(key)
+    if (!bone) return
+    this.tmpQuat2.identity().slerp(q, weight)
+    bone.target
+      .copy(bone.parentRestWorld)
+      .invert()
+      .multiply(this.tmpQuat2)
+      .multiply(bone.restWorld)
+    bone.hasTarget = true
   }
 
   private setRot(key: BoneKey, r: KEuler | undefined, damp = 1) {
@@ -363,7 +483,17 @@ export class InstructorAvatar {
     for (const bone of this.bones.values()) {
       if (bone.hasTarget) bone.node.quaternion.slerp(bone.target, sRot)
     }
-    model.position.lerp(this.posTarget, sPos)
+    this.root?.position.lerp(this.posTarget, sPos)
+    // FOOT PLANTING: after the legs settle, keep each foot level and pointing forward
+    // (its rest world orientation) instead of inheriting the shin's tilt — feet stay flat
+    // on the stage the way a real dancer's do, rather than dangling like a puppet's.
+    for (const key of ['leftFoot', 'rightFoot'] as const) {
+      const foot = this.bones.get(key)
+      if (!foot?.node.parent) continue
+      foot.node.parent.getWorldQuaternion(this.tmpQuat)
+      this.tmpQuat2.copy(this.tmpQuat).invert().multiply(foot.restWorld)
+      foot.node.quaternion.slerp(this.tmpQuat2, 0.85)
+    }
     this.renderer.render(this.scene, this.camera)
   }
 
@@ -372,7 +502,7 @@ export class InstructorAvatar {
     cancelAnimationFrame(this.raf)
     this.ro.disconnect()
     if (this.model) {
-      this.scene.remove(this.model)
+      if (this.root) this.scene.remove(this.root)
       this.model.traverse((o) => {
         const mesh = o as THREE.Mesh
         if (!(mesh as unknown as { isMesh?: boolean }).isMesh) return
@@ -381,6 +511,7 @@ export class InstructorAvatar {
         mats.forEach((m) => m?.dispose())
       })
       this.model = null
+      this.root = null
     }
     this.renderer.dispose()
   }

@@ -66,18 +66,20 @@ function poseFromParams(p: PoseParams): Landmark[] {
   const lHip = { x: 0.1 + dx, y: 0 + dy }
   const rHip = { x: -0.1 + dx, y: 0 + dy }
 
-  // Head/face (approximate, so the overlay reads as a person).
-  out[LM.nose] = L(dx, -0.62 + dy, 0.02)
-  out[LM.leftEye] = L(0.03 + dx, -0.65 + dy)
-  out[LM.rightEye] = L(-0.03 + dx, -0.65 + dy)
-  out[LM.leftEyeInner] = L(0.015 + dx, -0.65 + dy)
-  out[LM.rightEyeInner] = L(-0.015 + dx, -0.65 + dy)
-  out[LM.leftEyeOuter] = L(0.05 + dx, -0.65 + dy)
-  out[LM.rightEyeOuter] = L(-0.05 + dx, -0.65 + dy)
+  // Head/face (approximate, so the overlay reads as a person). Depth matters: the nose
+  // and eyes sit IN FRONT of the ears (negative z = toward the camera in BlazePose world
+  // space) so the 3D dancer's head solver gets a real facing direction.
+  out[LM.nose] = L(dx, -0.62 + dy, -0.06)
+  out[LM.leftEye] = L(0.03 + dx, -0.65 + dy, -0.055)
+  out[LM.rightEye] = L(-0.03 + dx, -0.65 + dy, -0.055)
+  out[LM.leftEyeInner] = L(0.015 + dx, -0.65 + dy, -0.055)
+  out[LM.rightEyeInner] = L(-0.015 + dx, -0.65 + dy, -0.055)
+  out[LM.leftEyeOuter] = L(0.05 + dx, -0.65 + dy, -0.05)
+  out[LM.rightEyeOuter] = L(-0.05 + dx, -0.65 + dy, -0.05)
   out[LM.leftEar] = L(0.07 + dx, -0.63 + dy)
   out[LM.rightEar] = L(-0.07 + dx, -0.63 + dy)
-  out[LM.mouthLeft] = L(0.03 + dx, -0.58 + dy)
-  out[LM.mouthRight] = L(-0.03 + dx, -0.58 + dy)
+  out[LM.mouthLeft] = L(0.03 + dx, -0.58 + dy, -0.05)
+  out[LM.mouthRight] = L(-0.03 + dx, -0.58 + dy, -0.05)
 
   out[LM.leftShoulder] = L(lShoulder.x, lShoulder.y)
   out[LM.rightShoulder] = L(rShoulder.x, rShoulder.y)
@@ -214,9 +216,10 @@ function paramsAtBeat(beat: number): PoseParams {
 
 // v2: knee bends became real sagittal squats (3D) for the rigged dancer.
 // v3: arm abduction now swings outward (was crossing the chest — invisible in 2D).
+// v4: face landmarks got proper depth (eyes/nose in front of ears) for the head solver.
 // Bumping the id regenerates the stored track for existing users; old ids are cleaned up.
-export const DEMO_TRACK_ID = 'demo-routine-v3'
-export const OLD_DEMO_TRACK_IDS = ['demo-routine-v1', 'demo-routine-v2']
+export const DEMO_TRACK_ID = 'demo-routine-v4'
+export const OLD_DEMO_TRACK_IDS = ['demo-routine-v1', 'demo-routine-v2', 'demo-routine-v3']
 
 /** Build the bundled demo ReferenceTrack. `createdAt` is injected for determinism. */
 export function generateDemoDance(createdAt: number, fps = 24): ReferenceTrack {

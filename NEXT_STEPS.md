@@ -30,14 +30,17 @@ deliberate "do later" so the current app stays focused.
 
 ## Visual / onboarding
 
-- ✅ **Just-Dance-style rigged dancer — DONE** (and upgraded to full 3D). An obsidian
-  silhouette mannequin (Mixamo rig) rendered with three.js on a rim-lit stage with real
-  shadows, driven per-frame from any routine's stored landmarks via Kalidokit with
-  rest-pose-quaternion retargeting (`src/ui/avatar/InstructorAvatar.ts`). Works for the
-  demo and every upload. NOTE: Kalidokit's outputs are mirror-view — limbs swap sides on
-  application (calibrated empirically; don't "fix" without re-testing known poses).
-  Follow-ups: avatar picker (multiple characters to choose from), hand/finger detail,
-  hip-travel from image-space landmarks for uploads, lighting themes.
+- ✅ **Just-Dance-style rigged dancer — DONE** (and upgraded to full 3D). A matte-black
+  MALE silhouette mannequin (Mixamo Y Bot) rendered with three.js on a rim-lit stage with
+  real shadows, driven per-frame from any routine's stored landmarks
+  (`src/ui/avatar/InstructorAvatar.ts`): Kalidokit body solve + rest-pose-quaternion
+  retargeting, custom head/neck solver from face landmarks, clavicle shrug assist, and
+  foot planting. NOTES: Kalidokit's outputs are mirror-view — limbs swap sides on
+  application (calibrated empirically; don't "fix" without re-testing known poses). The
+  Y Bot GLB's usable T-pose clip is named "mixamo.com"; its "T-Pose" clip is an empty
+  stub, and stopping the mixer would reset the pose. Follow-ups: avatar picker (multiple
+  characters to choose from), hand/finger detail, hip-travel from image-space landmarks
+  for uploads, lighting themes.
 - **Onboarding tutorial video.** A short "watch this first" walkthrough that plays for
   first-time users before they start.
 
