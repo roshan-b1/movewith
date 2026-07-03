@@ -84,16 +84,19 @@ function poseFromParams(p: PoseParams): Landmark[] {
   out[LM.leftHip] = L(lHip.x, lHip.y)
   out[LM.rightHip] = L(rHip.x, rHip.y)
 
-  // Arms. Upper-arm starts pointing straight down (0,1); abduct outward.
+  // Arms. Upper-arm starts pointing straight down (0,1); abduct OUTWARD (away from the
+  // body's midline). rot() with a positive angle swings toward -x, so the person's left
+  // arm (+x side) needs a NEGATIVE rotation to go outward — the old positive sign sent
+  // both arms crossing over the chest, which the flat 2D silhouette hid but 3D exposes.
   const armChain = (
     shoulder: { x: number; y: number },
     abduction: number,
     elbow: number,
     sign: 1 | -1, // +1 = person's left, abduct toward +x
   ) => {
-    const upperDir = rot({ x: 0, y: 1 }, sign * abduction)
+    const upperDir = rot({ x: 0, y: 1 }, -sign * abduction)
     const elbowPt = { x: shoulder.x + upperDir.x * UPPER_ARM, y: shoulder.y + upperDir.y * UPPER_ARM }
-    const foreDir = rot(upperDir, sign * elbow)
+    const foreDir = rot(upperDir, -sign * elbow)
     const wristPt = { x: elbowPt.x + foreDir.x * FOREARM, y: elbowPt.y + foreDir.y * FOREARM }
     return { elbowPt, wristPt }
   }
@@ -209,10 +212,11 @@ function paramsAtBeat(beat: number): PoseParams {
   return last.params
 }
 
-// v2: knee bends became real sagittal squats (3D) for the rigged dancer. Bumping the id
-// regenerates the stored track for existing users; old versions are cleaned up on init.
-export const DEMO_TRACK_ID = 'demo-routine-v2'
-export const OLD_DEMO_TRACK_IDS = ['demo-routine-v1']
+// v2: knee bends became real sagittal squats (3D) for the rigged dancer.
+// v3: arm abduction now swings outward (was crossing the chest — invisible in 2D).
+// Bumping the id regenerates the stored track for existing users; old ids are cleaned up.
+export const DEMO_TRACK_ID = 'demo-routine-v3'
+export const OLD_DEMO_TRACK_IDS = ['demo-routine-v1', 'demo-routine-v2']
 
 /** Build the bundled demo ReferenceTrack. `createdAt` is injected for determinism. */
 export function generateDemoDance(createdAt: number, fps = 24): ReferenceTrack {
