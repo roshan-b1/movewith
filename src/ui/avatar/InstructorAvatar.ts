@@ -1,15 +1,23 @@
-// Just-Dance-style 3D dancer: a featureless male mannequin (Mixamo X Bot) driven per-frame
+// Just-Dance-style 3D dancer: a featureless male mannequin (Mixamo Y Bot) driven per-frame
 // by the same 33 BlazePose world landmarks every routine stores — so it performs the bundled
-// demo and ANY uploaded song alike. Landmarks are solved to humanoid rotations with
-// Kalidokit (VRM-normalized space: identity rest pose, world-aligned axes), retargeted onto
-// the mannequin's Mixamo skeleton via rest-pose quaternions, applied with slerp smoothing
-// (which doubles as interpolation between ~30fps pose data and 60fps rendering), and
-// rendered with three.js on a lit stage with real shadows.
+// routines and ANY uploaded song alike.
+//
+// The pose solver is DIRECTION-EXACT: every limb bone is aligned to the actual landmark
+// bone vector (shoulder→elbow, elbow→wrist, hip→knee, knee→ankle), the hips/torso follow
+// a full orientation basis built from the hip and shoulder lines (works through full-body
+// turns), and the head follows the face landmarks. This places hands and feet exactly
+// where the data says — including folds behind the body (Macarena!) that heuristic
+// solvers clamp away. Targets are applied with slerp smoothing, which doubles as
+// interpolation between ~30fps pose data and 60fps rendering.
+//
+// Landmark space: x = person's left, y = down, z = toward camera NEGATIVE (hip-centered).
+// three.js world: x = viewer's right, y = up, z = toward camera POSITIVE. The map is
+// (x, -y, -z); the mannequin faces +z, so the person's left hand appears on the viewer's
+// right — exactly like watching a dancer face you.
 
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
-import * as Kalidokit from 'kalidokit'
 import { LM, type Landmark } from '../../core/pose/types'
 import { torsoAnchor, travelBaseline, stageTravel, type TorsoAnchor } from '../../core/pose/travel'
 import type { ReferenceFrame } from '../../core/reference/types'
@@ -19,8 +27,6 @@ export type AvatarStatus = 'loading' | 'ready' | 'error'
 const MODEL_URL = '/models/instructor.glb'
 
 // Smoothing rates (frame-rate independent): slerp factor = 1 - e^(-K·dt).
-// K_ROT ≈ the classic 0.3-per-30fps-frame Kalidokit demo feel; K_POS is much heavier
-// damping because hip position is the noisiest signal.
 const K_ROT = 12
 const K_POS = 3
 
@@ -43,14 +49,25 @@ const BONE_MAP = {
   rightLowerLeg: 'mixamorig:RightLeg',
   leftFoot: 'mixamorig:LeftFoot',
   rightFoot: 'mixamorig:RightFoot',
-  leftHand: 'mixamorig:LeftHand',
-  rightHand: 'mixamorig:RightHand',
 } as const
 type BoneKey = keyof typeof BONE_MAP
 
-// Relaxed finger curl (degrees per segment 1→3). A dancer's hands are soft, not the rig's
-// stiff splayed T-pose fingers. Applied once at load; landmark data is too coarse to
-// articulate individual fingers live without jitter.
+/** Limb segments driven by direction alignment, hierarchical order (parents first).
+ *  Person's left drives the mannequin's left (true view — see the header note). */
+const LIMB_SEGMENTS: Array<{ key: BoneKey; from: number; to: number }> = [
+  { key: 'leftUpperArm', from: LM.leftShoulder, to: LM.leftElbow },
+  { key: 'leftLowerArm', from: LM.leftElbow, to: LM.leftWrist },
+  { key: 'rightUpperArm', from: LM.rightShoulder, to: LM.rightElbow },
+  { key: 'rightLowerArm', from: LM.rightElbow, to: LM.rightWrist },
+  { key: 'leftUpperLeg', from: LM.leftHip, to: LM.leftKnee },
+  { key: 'leftLowerLeg', from: LM.leftKnee, to: LM.leftAnkle },
+  { key: 'rightUpperLeg', from: LM.rightHip, to: LM.rightKnee },
+  { key: 'rightLowerLeg', from: LM.rightKnee, to: LM.rightAnkle },
+]
+
+// Relaxed finger curl (degrees per segment 1→3) baked at load — a dancer's hands are
+// soft, not the rig's stiff splayed T-pose fingers. Pose landmarks are too coarse to
+// articulate fingers live without jitter.
 const FINGER_CURL: Record<string, [number, number, number]> = {
   Thumb: [4, 7, 9],
   Index: [10, 18, 14],
@@ -59,56 +76,22 @@ const FINGER_CURL: Record<string, [number, number, number]> = {
   Pinky: [17, 25, 19],
 }
 
-interface KEuler {
-  x: number
-  y: number
-  z: number
-  rotationOrder?: string
-}
-interface KPoseResult {
-  Hips: { position: { x: number; y: number; z: number }; rotation?: KEuler }
-  Spine: KEuler
-  LeftUpperArm: KEuler
-  LeftLowerArm: KEuler
-  RightUpperArm: KEuler
-  RightLowerArm: KEuler
-  LeftHand: KEuler
-  RightHand: KEuler
-  LeftUpperLeg: KEuler
-  LeftLowerLeg: KEuler
-  RightUpperLeg: KEuler
-  RightLowerLeg: KEuler
-}
-const solvePose = Kalidokit.Pose.solve as (
-  lm3d: unknown,
-  lm2d: unknown,
-  opts: { runtime: 'mediapipe'; enableLegs: boolean },
-) => KPoseResult | undefined
-
-/**
- * Kalidokit needs image-space (0..1) landmarks alongside world ones (it reads them for hip
- * placement and offscreen checks). Uploaded routines store them; the synthetic demo doesn't,
- * so approximate them from world space. The framing is deliberately tight (scale 0.35,
- * centered slightly high): Kalidokit treats landmarks near the frame edges (y > ~0.9) as
- * offscreen and resets those limbs to a rest pose — the feet must stay clear of that.
- */
-function synthImageLandmarks(world: Landmark[]): Landmark[] {
-  return world.map((l) => ({
-    x: 0.5 + l.x * 0.35,
-    y: 0.45 + l.y * 0.35,
-    z: l.z,
-    visibility: l.visibility ?? 1,
-  }))
-}
-
-/** A driven bone: the scene node plus its (and its parent's) rest-pose world rotation. */
 interface DrivenBone {
   node: THREE.Object3D
   restWorld: THREE.Quaternion
   parentRestWorld: THREE.Quaternion
-  /** Slerp target, in the bone's LOCAL space (already retargeted). */
+  /** Slerp target in the bone's local space (world-aligned bones: hips/spine/head/...). */
   target: THREE.Quaternion
   hasTarget: boolean
+  /** For limb segments: the bone's rest direction and the current target direction. */
+  restDir?: THREE.Vector3
+  dirTarget?: THREE.Vector3
+  hasDir?: boolean
+}
+
+/** Landmark → three.js world direction/point. */
+function lmToWorld(l: Landmark, out: THREE.Vector3): THREE.Vector3 {
+  return out.set(l.x, -l.y, -(l.z ?? 0))
 }
 
 export class InstructorAvatar {
@@ -117,7 +100,7 @@ export class InstructorAvatar {
   private camera: THREE.PerspectiveCamera
   private lastMs = performance.now()
   private model: THREE.Object3D | null = null
-  /** Outer pivot that carries the stage translation (side-steps, crouch). */
+  /** Outer pivot that carries the stage translation (side-steps, crouch, travel). */
   private root: THREE.Group | null = null
   private bones = new Map<BoneKey, DrivenBone>()
   private raf = 0
@@ -129,7 +112,16 @@ export class InstructorAvatar {
   private tmpEuler = new THREE.Euler()
   private tmpQuat = new THREE.Quaternion()
   private tmpQuat2 = new THREE.Quaternion()
+  private tmpQuat3 = new THREE.Quaternion()
   private tmpMat = new THREE.Matrix4()
+  private tmpVec = new THREE.Vector3()
+  private tmpVec2 = new THREE.Vector3()
+  private tmpVec3 = new THREE.Vector3()
+  private tmpVec4 = new THREE.Vector3()
+  /** Current body orientation (world deviation from rest) — reused by head/shrug. */
+  private hipsQuat = new THREE.Quaternion()
+  /** Foot-bone height when standing flat — the "soles on the floor" reference. */
+  private restFootY = 0.06
   /** The routine's median torso size/position in image space — see calibrate(). */
   private travelBase: TorsoAnchor | null = null
 
@@ -145,7 +137,7 @@ export class InstructorAvatar {
     this.camera.position.set(0, 1.05, 4.4)
     this.camera.lookAt(0, 0.95, 0)
 
-    // Studio environment so the mannequin's shell picks up believable reflections.
+    // Studio environment so the mannequin picks up believable reflections.
     const pmrem = new THREE.PMREMGenerator(this.renderer)
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
     pmrem.dispose()
@@ -174,22 +166,19 @@ export class InstructorAvatar {
     this.scene.add(rimCyan)
     this.scene.add(new THREE.AmbientLight(0x8890b8, 0.35))
 
-    // Stage floor. Lit PBR floors wash out here — the studio environment map reflects
-    // across the disc at grazing angles no matter the albedo — so the disc is UNLIT with
-    // a baked radial gradient (exact colors, every time), and a separate transparent
-    // ShadowMaterial catcher above it receives the dancer's soft shadow.
-    const grad = document.createElement('canvas')
-    grad.width = grad.height = 256
-    const g = grad.getContext('2d')!
-    const radial = g.createRadialGradient(128, 128, 8, 128, 128, 128)
-    radial.addColorStop(0, '#232841')
-    radial.addColorStop(0.65, '#121524')
-    radial.addColorStop(1, '#0a0c16')
-    g.fillStyle = radial
-    g.fillRect(0, 0, 256, 256)
-    const floorTex = new THREE.CanvasTexture(grad)
-    floorTex.colorSpace = THREE.SRGBColorSpace
-    // Sized so the dancer stays on the stage across the full travel range (±1m).
+    // Stage floor: a dark radial-gradient disc (unlit, so it stays deep) with a separate
+    // shadow-catcher on top for the dancer's soft shadow, edged with a glowing ring.
+    // Sized for the full travel range.
+    const floorCanvas = document.createElement('canvas')
+    floorCanvas.width = floorCanvas.height = 256
+    const fctx = floorCanvas.getContext('2d')!
+    const grad = fctx.createRadialGradient(128, 128, 8, 128, 128, 128)
+    grad.addColorStop(0, '#262b45')
+    grad.addColorStop(0.55, '#141830')
+    grad.addColorStop(1, '#0a0c16')
+    fctx.fillStyle = grad
+    fctx.fillRect(0, 0, 256, 256)
+    const floorTex = new THREE.CanvasTexture(floorCanvas)
     const floor = new THREE.Mesh(
       new THREE.CircleGeometry(1.55, 64),
       new THREE.MeshBasicMaterial({ map: floorTex }),
@@ -237,11 +226,9 @@ export class InstructorAvatar {
     const gltf = await new GLTFLoader().loadAsync(MODEL_URL)
     const model = gltf.scene
     // The retarget math needs the captured rest pose to be a clean T-POSE. Some rigs ship
-    // with animation clips and a non-T default pose — if the file provides an explicit
-    // T-pose clip, pose the skeleton with it before capturing rest quaternions.
-    // Prefer an explicit T-pose clip; Mixamo static-pose exports are named "mixamo.com".
-    // Some files also ship an EMPTY "T-Pose" stub (0 tracks) — require real tracks, and
-    // among matches take the shortest (a static pose clip is a fraction of a second).
+    // with animation clips and a non-T default pose — prefer an explicit T-pose clip;
+    // Mixamo static-pose exports are named "mixamo.com". Some files also ship an EMPTY
+    // "T-Pose" stub (0 tracks) — require real tracks, take the shortest match.
     const tPose = (gltf.animations ?? [])
       .filter((c) => c.tracks.length > 0 && /t[- ]?pose|mixamo\.com/i.test(c.name))
       .sort((a, b) => a.duration - b.duration)[0]
@@ -252,9 +239,9 @@ export class InstructorAvatar {
       // Deliberately NOT stopping the action: stopAllAction() would restore the nodes to
       // their pre-clip default pose. The mixer is simply dropped; the T-pose values stay.
     }
+
     // The whole figure is one MATTE BLACK SILHOUETTE — soft charcoal body, no chrome —
-    // with just enough sheen for the colored rim lights to define the edges. The classic
-    // dance-silhouette look, in 3D.
+    // with just enough sheen for the colored rim lights to define the edges.
     const silhouette = new THREE.MeshPhysicalMaterial({
       color: 0x0c0e14,
       metalness: 0.1,
@@ -273,9 +260,9 @@ export class InstructorAvatar {
       }
     })
 
-    // Capture each driven bone with its REST-pose world rotation (the model loads in a
-    // T-pose). Kalidokit's rotations live in VRM-normalized space — identity rest pose with
-    // world-aligned axes — so a Mixamo local target is R_parentRest⁻¹ · q_kalidokit · R_boneRest.
+    // Capture each driven bone with its (and its parent's) REST-pose world rotation.
+    // World-aligned solver rotations map to a bone's local space via
+    // R_parentRest⁻¹ · q · R_boneRest.
     model.updateWorldMatrix(true, true)
     const byName = new Map<string, THREE.Object3D>()
     model.traverse((o) => byName.set(o.name, o))
@@ -290,6 +277,36 @@ export class InstructorAvatar {
       this.bones.set(key, { node, restWorld, parentRestWorld, target: new THREE.Quaternion(), hasTarget: false })
     }
     if (!this.bones.has('hips')) throw new Error('mannequin rig not found')
+
+    // Limb segments additionally need their rest DIRECTION (bone joint → child joint).
+    const childOf: Partial<Record<BoneKey, BoneKey | 'handL' | 'handR'>> = {
+      leftUpperArm: 'leftLowerArm',
+      rightUpperArm: 'rightLowerArm',
+      leftUpperLeg: 'leftLowerLeg',
+      rightUpperLeg: 'rightLowerLeg',
+      leftLowerLeg: 'leftFoot',
+      rightLowerLeg: 'rightFoot',
+    }
+    const jointPos = (name: string) => {
+      const node = byName.get(name) ?? byName.get(name.replace(':', ''))
+      return node?.getWorldPosition(new THREE.Vector3()) ?? null
+    }
+    for (const seg of LIMB_SEGMENTS) {
+      const bone = this.bones.get(seg.key)
+      if (!bone) continue
+      const childKey = childOf[seg.key]
+      const childPos = childKey
+        ? this.bones.get(childKey as BoneKey)?.node.getWorldPosition(new THREE.Vector3()) ?? null
+        : // Lower arms end at the hand bone (not in BONE_MAP — fingers are static).
+          jointPos(seg.key === 'leftLowerArm' ? 'mixamorig:LeftHand' : 'mixamorig:RightHand')
+      const selfPos = bone.node.getWorldPosition(new THREE.Vector3())
+      if (!childPos) continue
+      const dir = childPos.sub(selfPos)
+      if (dir.lengthSq() < 1e-8) continue
+      bone.restDir = dir.normalize()
+      bone.dirTarget = bone.restDir.clone()
+      bone.hasDir = false
+    }
 
     // Soften the hands: bake a relaxed curl into every finger chain (palms face down in
     // the T-pose, so curling is a world-z rotation — negative for the left hand's +x
@@ -326,6 +343,38 @@ export class InstructorAvatar {
       }
     }
 
+    // The flat-standing foot height — the ground clamp in tick() keeps feet at or above
+    // this, so crouches and steps can never push the dancer through the stage.
+    model.updateWorldMatrix(true, true)
+    const lfY = this.bones.get('leftFoot')?.node.getWorldPosition(this.tmpVec).y
+    const rfY = this.bones.get('rightFoot')?.node.getWorldPosition(this.tmpVec2).y
+    if (lfY !== undefined && rfY !== undefined) this.restFootY = Math.min(lfY, rfY)
+
+    // FRONT MARKER: glowing cyan visor "eyes" across the face — the silhouette is
+    // otherwise front/back ambiguous at a glance.
+    const head = this.bones.get('head')?.node
+    if (head) {
+      const ws = head.getWorldScale(this.tmpVec).x || 1
+      const visor = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.02 / ws, 0.1 / ws, 4, 12),
+        new THREE.MeshStandardMaterial({
+          color: 0x061014,
+          emissive: 0x22d3ee,
+          emissiveIntensity: 1.8,
+          roughness: 0.35,
+        }),
+      )
+      visor.frustumCulled = false
+      head.add(visor)
+      const headWorldQuat = head.getWorldQuaternion(this.tmpQuat)
+      const target = head.getWorldPosition(this.tmpVec).add(this.tmpVec2.set(0, 0.075, 0.1))
+      visor.position.copy(head.worldToLocal(target))
+      visor.quaternion
+        .copy(headWorldQuat)
+        .invert()
+        .multiply(this.tmpQuat2.setFromEuler(this.tmpEuler.set(0, 0, Math.PI / 2, 'XYZ')))
+    }
+
     if (this.disposed) return
     const root = new THREE.Group()
     root.add(model)
@@ -338,7 +387,7 @@ export class InstructorAvatar {
    * Calibrate camera-relative stage travel against the whole routine. World landmarks are
    * hip-centered, so walking toward the camera / across the frame only shows in the
    * IMAGE-SPACE landmarks — travel is measured against the routine's median torso size
-   * and position. No-op for routines without image landmarks (the synthetic demo).
+   * and position. No-op for routines without image landmarks (the bundled ones).
    */
   calibrate(frames: ReadonlyArray<{ image?: Landmark[] }>) {
     this.travelBase = travelBaseline(frames)
@@ -346,99 +395,105 @@ export class InstructorAvatar {
 
   /**
    * Feed the landmark frame at the current playback time (call at data rate, ~30fps).
-   * Solves landmarks → bone rotation targets; the render loop smooths toward them.
+   * Solves landmarks → bone targets; the render loop smooths toward them.
    */
   setFrame(frame: ReferenceFrame | null) {
     if (!frame || !this.model || frame.world.length === 0) return
-    // Kalidokit expects MediaPipe-shaped world landmarks: origin at the hip midpoint
-    // (its offscreen guards read hip/wrist heights relative to it). Real extractions are
-    // already hip-centered; the synthetic demo moves its hips (side-steps, crouches), so
-    // re-center here — and keep the raw hip offset to move the dancer on the stage below.
-    const lh = frame.world[LM.leftHip]
-    const rh = frame.world[LM.rightHip]
-    let lm3d: Landmark[] = frame.world
-    if (lh && rh) {
-      const cx = (lh.x + rh.x) / 2
-      const cy = (lh.y + rh.y) / 2
-      const cz = ((lh.z ?? 0) + (rh.z ?? 0)) / 2
-      lm3d = frame.world.map((l) => ({
+    // Hip-center the world landmarks (real extractions already are; the bundled routines
+    // move their hips) and keep the raw hip offset for stage translation below.
+    const lhRaw = frame.world[LM.leftHip]
+    const rhRaw = frame.world[LM.rightHip]
+    let lm: Landmark[] = frame.world
+    if (lhRaw && rhRaw) {
+      const cx = (lhRaw.x + rhRaw.x) / 2
+      const cy = (lhRaw.y + rhRaw.y) / 2
+      const cz = ((lhRaw.z ?? 0) + (rhRaw.z ?? 0)) / 2
+      lm = frame.world.map((l) => ({
         x: l.x - cx,
         y: l.y - cy,
         z: (l.z ?? 0) - cz,
         visibility: l.visibility ?? 1,
       }))
     }
-    const lm2d = frame.image ?? synthImageLandmarks(lm3d)
-    let pose: KPoseResult | undefined
-    try {
-      pose = solvePose(lm3d, lm2d, { runtime: 'mediapipe', enableLegs: true })
-    } catch {
-      return // one bad frame shouldn't kill the dancer
+
+    const vis = (i: number) => lm[i]?.visibility ?? 0
+
+    // ---- HIPS + TORSO: full orientation basis from the hip and shoulder lines ----
+    const lh = lm[LM.leftHip]
+    const rh = lm[LM.rightHip]
+    const ls = lm[LM.leftShoulder]
+    const rs = lm[LM.rightShoulder]
+    if (lh && rh && ls && rs) {
+      // Hip line (person's right→left) in world space, and torso-up.
+      const H = lmToWorld(lh, this.tmpVec).sub(lmToWorld(rh, this.tmpVec2))
+      const U = lmToWorld(ls, this.tmpVec3)
+        .add(lmToWorld(rs, this.tmpVec4))
+        .multiplyScalar(0.5) // shoulders midpoint; hips midpoint is the origin (centered)
+      if (H.lengthSq() > 1e-6 && U.lengthSq() > 1e-6) {
+        H.normalize()
+        U.normalize()
+        const F = this.tmpVec2.crossVectors(H, U) // forward = right→left × up (faces +z at rest)
+        if (F.lengthSq() > 1e-6) {
+          F.normalize()
+          const U2 = this.tmpVec4.crossVectors(F, H).normalize()
+          this.tmpMat.makeBasis(H, U2, F)
+          this.hipsQuat.setFromRotationMatrix(this.tmpMat)
+          if (Number.isFinite(this.hipsQuat.x + this.hipsQuat.w)) {
+            this.setRotQuat('hips', this.hipsQuat, 1)
+
+            // Torso twist/tilt: the shoulder line expressed in the hips frame gives how
+            // far the upper body yaws/rolls relative to the pelvis; spread it up the spine.
+            const S = lmToWorld(ls, this.tmpVec).sub(lmToWorld(rs, this.tmpVec3))
+            if (S.lengthSq() > 1e-6) {
+              S.normalize().applyQuaternion(this.tmpQuat.copy(this.hipsQuat).invert())
+              const yawT = Math.atan2(-S.z, S.x)
+              const rollT = Math.atan2(S.y, S.x)
+              const bend = (w: number) =>
+                this.tmpQuat2
+                  .copy(this.hipsQuat)
+                  .multiply(this.tmpQuat3.setFromEuler(this.tmpEuler.set(0, yawT * w, rollT * w, 'YZX')))
+              this.setRotQuat('spine', bend(0.35), 1)
+              this.setRotQuat('chest', bend(0.75), 1)
+            }
+          }
+        }
+      }
     }
-    if (!pose) return
 
-    // Kalidokit is built for MIRRORED webcam views: its "Left*" outputs are computed from
-    // the person's RIGHT landmarks (see calcArms: UpperArm.l ← lm[12]) with side-specific
-    // sign handling baked in. The instructor here is shown face-on (unmirrored, matching
-    // the video/2D paths — the Mirror button flips the canvas), so paired limbs SWAP SIDES
-    // on application, and the central bones un-mirror by negating y/z. Verified empirically
-    // against known choreography (rest / arms-up / one-arm) — see the calibration in git
-    // history before changing any of this.
-    const unmirror = (e: KEuler | undefined): KEuler | undefined =>
-      e ? { x: e.x, y: -e.y, z: -e.z } : undefined
-    this.setRot('hips', unmirror(pose.Hips.rotation), 0.7)
-    // Split the solved spine rotation across spine + chest (the classic Kalidokit split).
-    this.setRot('spine', unmirror(pose.Spine), 0.45)
-    this.setRot('chest', unmirror(pose.Spine), 0.25)
-    this.setRot('leftUpperArm', pose.RightUpperArm)
-    this.setRot('leftLowerArm', pose.RightLowerArm)
-    this.setRot('rightUpperArm', pose.LeftUpperArm)
-    this.setRot('rightLowerArm', pose.LeftLowerArm)
-    this.setRot('leftUpperLeg', pose.RightUpperLeg)
-    this.setRot('leftLowerLeg', pose.RightLowerLeg)
-    this.setRot('rightUpperLeg', pose.LeftUpperLeg)
-    this.setRot('rightLowerLeg', pose.LeftLowerLeg)
-
-    // WRISTS — z only (the Kalidokit-demo convention: x/y from these landmarks is mostly
-    // noise), gated on the hand landmarks being real: index and pinky must be distinct
-    // points, which the synthetic demo's stub hands are not. Same side-swap as the arms;
-    // Kalidokit's LeftHand comes from the person's right-hand landmarks.
-    const handOK = (i: number, p: number) => {
-      const a = lm3d[i]
-      const b = lm3d[p]
-      return !!a && !!b && Math.hypot(a.x - b.x, a.y - b.y, (a.z ?? 0) - (b.z ?? 0)) > 0.008
+    // ---- LIMBS: direction-exact bone alignment (applied hierarchically in tick) ----
+    for (const seg of LIMB_SEGMENTS) {
+      const bone = this.bones.get(seg.key)
+      if (!bone?.restDir || !bone.dirTarget) continue
+      const a = lm[seg.from]
+      const b = lm[seg.to]
+      if (!a || !b || vis(seg.from) < 0.35 || vis(seg.to) < 0.35) {
+        // Not confidently visible: relax toward the rest direction.
+        bone.dirTarget.copy(bone.restDir)
+        bone.hasDir = true
+        continue
+      }
+      const dir = lmToWorld(b, this.tmpVec).sub(lmToWorld(a, this.tmpVec2))
+      if (dir.lengthSq() < 1e-6 || !Number.isFinite(dir.x + dir.y + dir.z)) continue
+      bone.dirTarget.copy(dir.normalize())
+      bone.hasDir = true
     }
-    const wristZ = (e: KEuler): KEuler => ({
-      x: 0,
-      y: 0,
-      z: THREE.MathUtils.clamp(e.z, -0.7, 0.7),
-    })
-    if (handOK(LM.leftIndex, LM.leftPinky)) this.setRot('leftHand', wristZ(pose.RightHand), 0.6)
-    if (handOK(LM.rightIndex, LM.rightPinky)) this.setRot('rightHand', wristZ(pose.LeftHand), 0.6)
-    // Hands are skipped: hand landmarks are too coarse in dance footage (and synthetic in
-    // the demo), so driving wrists from them adds jitter without adding readability.
 
-    // HEAD + NECK — solved directly from the face landmarks (Kalidokit's Pose solver
-    // doesn't cover the head, and head motion is what sells the figure as human).
-    // Build the head's world basis from the ear line (lateral) and the eyes-vs-ears
-    // offset (forward). Landmark space is x-right / y-down / z-toward-camera-negative;
-    // three.js is x-right / y-up / z-toward-camera-positive.
-    this.solveHead(lm3d)
+    // ---- HEAD + NECK from the face landmarks (falls back to following the body) ----
+    this.solveHead(lm)
 
-    // SHOULDERS — a natural shrug assist: clavicles rise as the arm goes past horizontal.
-    // Person's left arm drives the mannequin's left clavicle (true face-on view).
-    this.solveShrug('leftShoulder', lm3d[LM.leftShoulder], lm3d[LM.leftElbow], 1)
-    this.solveShrug('rightShoulder', lm3d[LM.rightShoulder], lm3d[LM.rightElbow], -1)
+    // ---- SHOULDERS: clavicles rise as the arm passes horizontal (measured in the
+    // body's own frame so it works mid-turn) ----
+    this.solveShrug('leftShoulder', lm[LM.leftShoulder], lm[LM.leftElbow], 1)
+    this.solveShrug('rightShoulder', lm[LM.rightShoulder], lm[LM.rightElbow], -1)
 
-    // Body translation on the stage, from two complementary signals:
-    // • world hip midpoint — side-steps and crouches for the synthetic demo (real videos
-    //   are hip-centered, ≈0). World y is down; three.js up.
-    // • image-space travel — real videos ONLY: the instructor walking toward/away from
-    //   the camera (apparent torso size) and across the frame (hip midpoint), measured
-    //   against the routine's calibrated median. See calibrate() / core/pose/travel.ts.
-    if (lh && rh) {
-      const hx = (lh.x + rh.x) / 2
-      const hy = (lh.y + rh.y) / 2
+    // ---- STAGE TRANSLATION ----
+    // • world hip midpoint — side-steps and crouches for the bundled routines (real
+    //   videos are hip-centered, ≈0). World y is down; three.js up.
+    // • image-space travel — real videos ONLY: toward/away from camera (apparent torso
+    //   size) and across the frame (hip midpoint) vs the calibrated routine median.
+    if (lhRaw && rhRaw) {
+      const hx = (lhRaw.x + rhRaw.x) / 2
+      const hy = (lhRaw.y + rhRaw.y) / 2
       if (Number.isFinite(hx) && Number.isFinite(hy)) {
         let tx = 0
         let tz = 0
@@ -459,81 +514,81 @@ export class InstructorAvatar {
     }
   }
 
-  /** Head/neck orientation from ears + eyes, split neck 35% / head 65%. */
+  /** Head/neck orientation from ears + eyes, split neck 35% / head 65%. When the face
+   *  isn't usable (turned away, occluded), the head follows the body instead. */
   private solveHead(lm: Landmark[]) {
     const le = lm[LM.leftEar]
     const re = lm[LM.rightEar]
     const ley = lm[LM.leftEye]
     const rey = lm[LM.rightEye]
-    if (!le || !re || !ley || !rey) return
-    // Lateral axis: right ear → left ear (person's left = +x when facing the camera).
-    const R = new THREE.Vector3(le.x - re.x, -(le.y - re.y), -((le.z ?? 0) - (re.z ?? 0)))
-    // Forward axis: ear midpoint → eye midpoint (eyes sit in front of ears, at ear height).
-    const F = new THREE.Vector3(
-      (ley.x + rey.x - le.x - re.x) / 2,
-      -(ley.y + rey.y - le.y - re.y) / 2,
-      -((ley.z ?? 0) + (rey.z ?? 0) - (le.z ?? 0) - (re.z ?? 0)) / 2,
-    )
-    if (R.lengthSq() < 1e-6 || F.lengthSq() < 1e-6) return
-    R.normalize()
-    F.normalize()
-    // Guard: only drive the head while it faces roughly forward — degenerate/rear-facing
-    // face landmarks (occlusions, spins) would otherwise whip the head around.
-    if (F.z < 0.15) return
-    const U = new THREE.Vector3().crossVectors(F, R)
-    if (U.lengthSq() < 1e-6 || U.y < 0.2) return
-    U.normalize()
-    const R2 = new THREE.Vector3().crossVectors(U, F).normalize()
-    this.tmpMat.makeBasis(R2, U, F)
-    this.tmpQuat.setFromRotationMatrix(this.tmpMat)
-    if (!Number.isFinite(this.tmpQuat.x + this.tmpQuat.w)) return
-    // Distribute the rotation: a real head turn is shared between neck and head.
-    this.setRotQuat('neck', this.tmpQuat, 0.35)
-    this.setRotQuat('head', this.tmpQuat, 0.65)
+    let applied = false
+    if (le && re && ley && rey) {
+      // Lateral axis: right ear → left ear; forward: ear midpoint → eye midpoint.
+      const R = lmToWorld(le, this.tmpVec).sub(lmToWorld(re, this.tmpVec2))
+      const F = this.tmpVec3.set(
+        (ley.x + rey.x - le.x - re.x) / 2,
+        -(ley.y + rey.y - le.y - re.y) / 2,
+        -((ley.z ?? 0) + (rey.z ?? 0) - (le.z ?? 0) - (re.z ?? 0)) / 2,
+      )
+      if (R.lengthSq() > 1e-6 && F.lengthSq() > 1e-6) {
+        R.normalize()
+        F.normalize()
+        // Face must roughly agree with the body's facing — otherwise the landmarks are
+        // occlusion noise and would whip the head around.
+        const bodyF = this.tmpVec4.set(0, 0, 1).applyQuaternion(this.hipsQuat)
+        if (F.dot(bodyF) > 0.2) {
+          const U = this.tmpVec4.crossVectors(F, R)
+          if (U.lengthSq() > 1e-6 && U.y > 0.2) {
+            U.normalize()
+            const R2 = this.tmpVec2.crossVectors(U, F).normalize()
+            this.tmpMat.makeBasis(R2, U, F)
+            this.tmpQuat.setFromRotationMatrix(this.tmpMat)
+            if (Number.isFinite(this.tmpQuat.x + this.tmpQuat.w)) {
+              // Targets are ABSOLUTE world orientations: the head gets the full face
+              // orientation, the neck splits the difference from the body — so a turn
+              // shared by the whole body doesn't count twice (or get counter-rotated).
+              this.tmpQuat2.copy(this.hipsQuat).slerp(this.tmpQuat, 0.5)
+              this.setRotQuat('neck', this.tmpQuat2, 1)
+              this.setRotQuat('head', this.tmpQuat, 1)
+              applied = true
+            }
+          }
+        }
+      }
+    }
+    if (!applied) {
+      // Follow the body through turns rather than freezing at the last good pose.
+      this.setRotQuat('neck', this.hipsQuat, 1)
+      this.setRotQuat('head', this.hipsQuat, 1)
+    }
   }
 
-  /** Clavicle rise once the upper arm passes horizontal — reads as a natural shrug. */
+  /** Clavicle rise once the upper arm passes horizontal — a natural shrug. Elevation is
+   *  measured in the body frame so it stays correct when the dancer turns. */
   private solveShrug(key: BoneKey, shoulder: Landmark | undefined, elbow: Landmark | undefined, sign: 1 | -1) {
     if (!shoulder || !elbow) return
-    const vx = elbow.x - shoulder.x
-    const vy = elbow.y - shoulder.y // y down
-    const len = Math.hypot(vx, vy)
+    const v = lmToWorld(elbow, this.tmpVec).sub(lmToWorld(shoulder, this.tmpVec2))
+    const len = v.length()
     if (len < 1e-4) return
-    // 0 = arm straight down, 180 = straight up.
-    const elev = (Math.acos(THREE.MathUtils.clamp(vy / len, -1, 1)) * 180) / Math.PI
+    v.applyQuaternion(this.tmpQuat.copy(this.hipsQuat).invert())
+    // 0 = arm straight down, 180 = straight up (body frame; y is up here).
+    const elev = (Math.acos(THREE.MathUtils.clamp(-v.y / len, -1, 1)) * 180) / Math.PI
     const amt = THREE.MathUtils.clamp((elev - 100) / 80, 0, 1) * (12 * Math.PI / 180)
-    // +z about world rotates the +x (left) side up; mirror for the right clavicle.
-    this.tmpQuat.setFromEuler(this.tmpEuler.set(0, 0, sign * amt, 'XYZ'))
-    this.setRotQuat(key, this.tmpQuat, 1)
+    this.tmpQuat2
+      .copy(this.hipsQuat)
+      .multiply(this.tmpQuat3.setFromEuler(this.tmpEuler.set(0, 0, sign * amt, 'XYZ')))
+    this.setRotQuat(key, this.tmpQuat2, 1)
   }
 
   /** Apply a world-aligned rotation (optionally scaled toward identity) to a bone target. */
   private setRotQuat(key: BoneKey, q: THREE.Quaternion, weight: number) {
     const bone = this.bones.get(key)
     if (!bone) return
-    this.tmpQuat2.identity().slerp(q, weight)
+    const w = weight >= 1 ? q : this.tmpQuat3.identity().slerp(q, weight)
     bone.target
       .copy(bone.parentRestWorld)
       .invert()
-      .multiply(this.tmpQuat2)
-      .multiply(bone.restWorld)
-    bone.hasTarget = true
-  }
-
-  private setRot(key: BoneKey, r: KEuler | undefined, damp = 1) {
-    if (!r) return
-    const bone = this.bones.get(key)
-    if (!bone) return
-    const x = r.x * damp
-    const y = r.y * damp
-    const z = r.z * damp
-    if (!Number.isFinite(x + y + z)) return
-    // Kalidokit rotation (VRM-normalized space) → this bone's local space.
-    this.tmpQuat.setFromEuler(this.tmpEuler.set(x, y, z, 'XYZ'))
-    bone.target
-      .copy(bone.parentRestWorld)
-      .invert()
-      .multiply(this.tmpQuat)
+      .multiply(w)
       .multiply(bone.restWorld)
     bone.hasTarget = true
   }
@@ -557,13 +612,29 @@ export class InstructorAvatar {
     if (!model) return
     const sRot = 1 - Math.exp(-K_ROT * delta)
     const sPos = 1 - Math.exp(-K_POS * delta)
+
+    // 1) World-aligned bones (hips, spine chain, head, clavicles).
     for (const bone of this.bones.values()) {
       if (bone.hasTarget) bone.node.quaternion.slerp(bone.target, sRot)
     }
     this.root?.position.lerp(this.posTarget, sPos)
-    // FOOT PLANTING: after the legs settle, keep each foot level and pointing forward
-    // (its rest world orientation) instead of inheriting the shin's tilt — feet stay flat
-    // on the stage the way a real dancer's do, rather than dangling like a puppet's.
+
+    // 2) Limb segments: align each bone to its landmark direction, parents first so a
+    //    child's local target is computed against the parent's fresh orientation.
+    for (const seg of LIMB_SEGMENTS) {
+      const bone = this.bones.get(seg.key)
+      if (!bone?.hasDir || !bone.restDir || !bone.dirTarget || !bone.node.parent) continue
+      bone.node.parent.getWorldQuaternion(this.tmpQuat)
+      // Minimal world rotation taking the rest direction to the target direction.
+      this.tmpQuat2.setFromUnitVectors(bone.restDir, bone.dirTarget)
+      // desired world = align · restWorld; local = parentWorld⁻¹ · desired.
+      this.tmpQuat3.copy(this.tmpQuat2).multiply(bone.restWorld)
+      this.tmpQuat.invert().multiply(this.tmpQuat3)
+      bone.node.quaternion.slerp(this.tmpQuat, sRot)
+    }
+
+    // 3) FOOT PLANTING: keep each foot level and pointing forward (its rest world
+    //    orientation) instead of inheriting the shin's tilt.
     for (const key of ['leftFoot', 'rightFoot'] as const) {
       const foot = this.bones.get(key)
       if (!foot?.node.parent) continue
@@ -571,6 +642,22 @@ export class InstructorAvatar {
       this.tmpQuat2.copy(this.tmpQuat).invert().multiply(foot.restWorld)
       foot.node.quaternion.slerp(this.tmpQuat2, 0.85)
     }
+
+    // 4) GROUND CLAMP: hip-drop (crouches) lowers the whole body, but bent knees don't
+    //    shorten the legs by exactly the same amount — if the lower foot dips below its
+    //    flat-standing height, lift the root so the sole stays ON the stage. Only ever
+    //    lifts, so jumps still work.
+    if (this.root) {
+      const lf = this.bones.get('leftFoot')
+      const rf = this.bones.get('rightFoot')
+      if (lf && rf) {
+        const ly = lf.node.getWorldPosition(this.tmpVec).y
+        const ry = rf.node.getWorldPosition(this.tmpVec2).y
+        const penetration = Math.min(ly, ry) - this.restFootY
+        if (penetration < 0) this.root.position.y -= penetration
+      }
+    }
+
     this.renderer.render(this.scene, this.camera)
   }
 

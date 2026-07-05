@@ -1,6 +1,5 @@
 import { useRef, useState } from 'react'
 import { useSession } from '../../state/sessionStore'
-import { DEMO_TRACK_ID } from '../../core/demo/demoDance'
 
 export function Library() {
   const tracks = useSession((s) => s.tracks)
@@ -157,7 +156,7 @@ export function Library() {
                   <button onClick={() => void openTrack(t.id)} className="rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-cream shadow-soft transition hover:brightness-105 active:scale-95">
                     Open →
                   </button>
-                  {t.id !== DEMO_TRACK_ID && (
+                  {t.source.type !== 'bundled' && (
                     <button
                       onClick={() => setConfirmDelete(t.id)}
                       className="rounded-xl border border-line px-3 py-2 text-xs font-medium text-ink/45 transition hover:border-bad/50 hover:text-bad"

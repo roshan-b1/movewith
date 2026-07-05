@@ -15,6 +15,7 @@ import {
   autoMoveBounds,
 } from '../../core/reference/segment'
 import { VoiceController, type VoiceCommand } from '../../engine/voice'
+import { BeatMusic } from '../../engine/beatMusic'
 import { drawSkeleton, drawHumanFigure, worldProjector, containProjector } from '../components/drawSkeleton'
 import { InstructorAvatar, type AvatarStatus } from '../avatar/InstructorAvatar'
 import { AccuracyMeter } from '../components/AccuracyMeter'
@@ -106,6 +107,9 @@ export function Practice() {
   // 3D dancer: on by default; falls back to the classic 2D drawing if the model fails.
   const [avatar3d, setAvatar3d] = useState(true)
   const [avatarStatus, setAvatarStatus] = useState<AvatarStatus>('loading')
+  // Synthesized backing beat for generated routines (no video = no audio track of its own).
+  const [musicOn, setMusicOn] = useState(true)
+  const musicRef = useRef<BeatMusic | null>(null)
 
   const moves = useMemo(() => buildMovesFromBounds(trimStart, trimEnd, moveBounds), [trimStart, trimEnd, moveBounds])
   const ticks = useMemo(() => moveTicks(moves), [moves])
@@ -234,6 +238,11 @@ export function Practice() {
     const pb = new PlaybackController(duration)
     pb.attachVideo(videoUrl ? instructorVideoRef.current : null)
     playbackRef.current = pb
+    // Generated routines have no audio of their own — give them a synthesized beat
+    // (follows play/pause/loop/slow-mo through the controller's clock).
+    if (!videoUrl) {
+      musicRef.current = new BeatMusic(pb, track.tempo.bpm, track.tempo.firstBeatSec)
+    }
     pb.setLoop({ startSec: 0, endSec: duration })
     // Seed skip ranges from restored state (the skip-sync effect runs before this on mount).
     pb.setSkipRanges(movesRef.current.filter((m) => skipRef.current.includes(m.index)).map((m) => [m.startSec, m.endSec] as [number, number]))
@@ -351,9 +360,16 @@ export function Practice() {
     })
 
     drawInstructor(pb.getTime())
-    return () => { unsub(); unsubPlay(); pb.dispose(); playbackRef.current = null }
+    return () => {
+      unsub(); unsubPlay()
+      musicRef.current?.dispose(); musicRef.current = null
+      pb.dispose(); playbackRef.current = null
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [track.id, videoUrl])
+
+  // Keep the beat track in sync with the music toggle.
+  useEffect(() => void musicRef.current?.setEnabled(musicOn), [musicOn, track.id])
 
   // Attach the <video> to the playback controller the moment it mounts (it doesn't exist
   // on the setup screen). Without this the controller stays in virtual mode and the real
@@ -895,6 +911,16 @@ export function Practice() {
           <span className="absolute left-3 top-3 z-20 rounded-2xl bg-brand px-3 py-2 font-display text-sm font-bold text-cream shadow-glow">
             ▶ Segment {previewIdx + 1}
           </span>
+        )}
+        {/* Generated routines: toggle the synthesized backing beat. */}
+        {!videoUrl && (
+          <button
+            onClick={() => setMusicOn((m) => !m)}
+            title={musicOn ? 'Mute the beat' : 'Play the beat'}
+            className="absolute right-3 top-3 z-20 rounded-2xl border border-line bg-black/50 px-3 py-2 text-sm font-semibold text-cream/90 backdrop-blur transition hover:border-brand/60 active:scale-95"
+          >
+            {musicOn ? '🔊 Beat on' : '🔇 Beat off'}
+          </button>
         )}
         {/* Mirror is done by flipping the CANVAS draw (see drawInstructor), never by
             CSS-transforming the <video> — that tore into a split-screen on Windows. When

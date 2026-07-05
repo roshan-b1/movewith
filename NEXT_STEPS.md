@@ -33,17 +33,20 @@ deliberate "do later" so the current app stays focused.
 - ✅ **Just-Dance-style rigged dancer — DONE** (and upgraded to full 3D). A matte-black
   MALE silhouette mannequin (Mixamo Y Bot) rendered with three.js on a rim-lit stage with
   real shadows, driven per-frame from any routine's stored landmarks
-  (`src/ui/avatar/InstructorAvatar.ts`): Kalidokit body solve + rest-pose-quaternion
-  retargeting, custom head/neck solver from face landmarks, clavicle shrug assist, and
-  foot planting. NOTES: Kalidokit's outputs are mirror-view — limbs swap sides on
-  application (calibrated empirically; don't "fix" without re-testing known poses). The
-  Y Bot GLB's usable T-pose clip is named "mixamo.com"; its "T-Pose" clip is an empty
+  (`src/ui/avatar/InstructorAvatar.ts`). The solver is fully CUSTOM and direction-exact
+  (Kalidokit was removed — it clamps folds behind the body and hip yaw, so behind-the-head
+  moves and full turns came out wrong): every limb bone aligns to its landmark bone vector
+  via rest-pose-quaternion retargeting, the hips/torso follow a full orientation basis
+  from the hip+shoulder lines (handles 360° turns), plus a head/neck solver from face
+  landmarks, clavicle shrug, foot planting, and a ground clamp (feet never dip through the
+  stage; jumps still work). NOTES: person's left drives the mannequin's left (true view —
+  the person's left hand appears on the viewer's right, like watching a dancer face you).
+  The Y Bot GLB's usable T-pose clip is named "mixamo.com"; its "T-Pose" clip is an empty
   stub, and stopping the mixer would reset the pose. Also done: camera-relative stage
   travel for uploads (walks toward/away + across the stage, from image-space torso size
-  vs the routine median — `core/pose/travel.ts`, unit-tested), relaxed finger articulation,
-  and data-driven wrist rotation (gated off the demo's stub hand landmarks). Follow-ups:
-  avatar picker (multiple characters to choose from), live per-finger tracking (needs a
-  hand-landmark model, not pose), lighting themes.
+  vs the routine median — `core/pose/travel.ts`, unit-tested) and relaxed finger
+  articulation. Follow-ups: avatar picker (multiple characters to choose from), live
+  per-finger tracking (needs a hand-landmark model, not pose), lighting themes.
 - **Onboarding tutorial video.** A short "watch this first" walkthrough that plays for
   first-time users before they start.
 
