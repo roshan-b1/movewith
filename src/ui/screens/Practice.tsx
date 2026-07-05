@@ -5,7 +5,7 @@ import { PracticeEngine, type ReferenceContext } from '../../engine/practiceEngi
 import { startCamera, listVideoInputs, preferredCameraId, type CameraHandle } from '../../engine/camera'
 import { getPoseProvider } from '../../providers/instance'
 import { anglesAt, sectionAngles, nearestFrameIndex } from '../../core/reference/build'
-import { scoreSection, type SectionScore } from '../../core/compare/score'
+import { scoreSectionDetailed, type DetailedSectionScore } from '../../core/compare/score'
 import { STRICT, LOOSE, type ScoreConfig, type Limb } from '../../core/compare/similarity'
 import type { Section } from '../../core/audio/beats'
 import {
@@ -24,11 +24,47 @@ import { MoveEditor } from '../components/MoveEditor'
 import { SegmentBar } from '../components/SegmentBar'
 import type { ReferenceTrack } from '../../core/reference/types'
 
-const PASS_THRESHOLD = 75
 const RATE_STEPS = [0.5, 0.75, 1]
-const LIMB_TIP: Record<Limb, string> = {
-  leftArm: 'Sharpen your left arm', rightArm: 'Sharpen your right arm',
-  leftLeg: 'Watch your left leg', rightLeg: 'Watch your right leg', torso: 'Keep your torso aligned',
+const LIMB_LABEL: Record<Limb, string> = {
+  leftArm: 'Left arm', rightArm: 'Right arm', leftLeg: 'Left leg', rightLeg: 'Right leg', torso: 'Torso',
+}
+const LIMB_ADVICE: Record<Limb, string> = {
+  leftArm: 'match the elbow bend and where the arm points',
+  rightArm: 'match the elbow bend and where the arm points',
+  leftLeg: 'check the knee bend and where the foot lands',
+  rightLeg: 'check the knee bend and where the foot lands',
+  torso: 'keep your lean and hip line matched to the move',
+}
+const PHASE_LABEL: Record<'start' | 'middle' | 'end', string> = {
+  start: 'beginning', middle: 'middle', end: 'ending',
+}
+/** Convert an average per-limb error (degrees) into a 0-100 bar for the results panel. */
+function limbQuality(errorDeg: number) {
+  return Math.max(0, Math.min(100, Math.round(100 - errorDeg * 2.2)))
+}
+function scoreVerdict(score: number) {
+  if (score >= 85) return { label: 'Nailed it', color: '#a3e635' }
+  if (score >= 70) return { label: 'Close — tighten it up', color: '#facc15' }
+  if (score >= 50) return { label: 'Getting there', color: '#ff9f1c' }
+  return { label: 'Keep drilling this one', color: '#ff5470' }
+}
+/** Human feedback lines: which limbs drifted (and how far), and when it slipped. */
+function feedbackLines(r: DetailedSectionScore): string[] {
+  const lines: string[] = []
+  const limbs = (Object.entries(r.perLimb) as [Limb, { errorDeg: number; ok: boolean }][])
+    .sort((a, b) => b[1].errorDeg - a[1].errorDeg)
+  for (const [limb, res] of limbs.slice(0, 2)) {
+    if (!res.ok) lines.push(`${LIMB_LABEL[limb]} drifted ~${Math.round(res.errorDeg)}° from the move — ${LIMB_ADVICE[limb]}.`)
+  }
+  if (r.phases.length === 3) {
+    const worst = r.phases.reduce((a, b) => (b.score < a.score ? b : a))
+    const best = r.phases.reduce((a, b) => (b.score > a.score ? b : a))
+    if (best.score - worst.score > 12) {
+      lines.push(`The ${PHASE_LABEL[worst.phase]} slipped the most (${Math.round(worst.score)}% there).`)
+    }
+  }
+  if (lines.length === 0) lines.push('Clean run — everything tracked tight to the reference. 🔥')
+  return lines
 }
 const VOICE_LABEL: Record<VoiceCommand, string> = {
   play: 'Play', pause: 'Pause', restart: 'Restart', slower: 'Slower', faster: 'Faster',
@@ -75,7 +111,7 @@ export function Practice() {
   const [moveSec, setMoveSec] = useState<number>(savedSetup?.moveSec ?? 8)
   const [reps, setReps] = useState<number>(savedSetup?.reps ?? Infinity)
   const [breakSecs, setBreakSecs] = useState<number>(savedSetup?.breakSecs ?? 3)
-  const [cameraOn, setCameraOn] = useState(savedSetup?.cameraOn ?? false)
+  const [cameraOn, setCameraOn] = useState(savedSetup?.cameraOn ?? true)
   const scoring = cameraOn && !playbackOnly && phase === 'go'
   const [completed, setCompleted] = useState<number[]>([])
   const [skip, setSkip] = useState<number[]>(savedSetup?.skip ?? [])
@@ -98,7 +134,11 @@ export function Practice() {
   const [camStatus, setCamStatus] = useState<'init' | 'ready' | 'error'>('init')
   const [camError, setCamError] = useState<string | null>(null)
   const [noBody, setNoBody] = useState(false)
-  const [lastTake, setLastTake] = useState<SectionScore | null>(null)
+  // Per-segment flow: WATCH the video → "Got it" → TEST on camera with the music →
+  // RESULTS (score + feedback) → Proceed. The test/results steps need the camera.
+  const [segMode, setSegMode] = useState<'watch' | 'test' | 'results'>('watch')
+  const [testResult, setTestResult] = useState<DetailedSectionScore | null>(null)
+  const [testError, setTestError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([])
   const [activeCam, setActiveCam] = useState<string | null>(null)
@@ -154,6 +194,11 @@ export function Practice() {
   const completedRef = useRef<number[]>([])
   const countdownTimerRef = useRef<number | null>(null)
   const voiceHandlerRef = useRef<(c: VoiceCommand) => void>(() => {})
+  const segModeRef = useRef<'watch' | 'test' | 'results'>('watch')
+  /** True while the camera-test take is being recorded (segment playing once through). */
+  const testActiveRef = useRef(false)
+  const finishTestRef = useRef<() => void>(() => {})
+  useEffect(() => void (segModeRef.current = segMode), [segMode])
   useEffect(() => void (completedRef.current = completed), [completed])
 
   useEffect(() => void (trackRef.current = track), [track])
@@ -328,26 +373,28 @@ export function Practice() {
       if (seekTarget !== null) {
         if (Math.abs(t - seekTarget) < 0.35 || now - lastSeekMsRef.current > 1500) awaitingSeekRef.current = null
       } else if (prev > t + 0.08 && phaseRef.current === 'go' && !fullRunRef.current) {
-        if (scoringRef.current) gradeLoop()
-        repCounterRef.current += 1
-        const reachedLimit = repsRef.current !== Infinity && repCounterRef.current >= repsRef.current
         pb.pause()
-        if (reachedLimit) {
-          repCounterRef.current = 0
-          flashToast('Done · ✓ got it, or ↻ repeat')
+        if (testActiveRef.current) {
+          // The camera test plays the segment exactly once — the wrap is the finish line.
+          testActiveRef.current = false
+          finishTestRef.current()
         } else {
-          // Wait the break, then resume from the loop start (already there — no re-seek,
-          // which could otherwise interrupt play() and leave it stuck paused).
-          runCountdown(() => {
-            const p = playbackRef.current
-            if (!p) return
-            prevTimeRef.current = loopStartRef.current
-            engineRef.current?.startRecording()
-            p.play()
-          })
+          repCounterRef.current += 1
+          const reachedLimit = repsRef.current !== Infinity && repCounterRef.current >= repsRef.current
+          if (reachedLimit) {
+            repCounterRef.current = 0
+            flashToast('Done · ✓ Got it to test yourself, or ↻ repeat')
+          } else {
+            // Wait the break, then resume from the loop start (already there — no re-seek,
+            // which could otherwise interrupt play() and leave it stuck paused).
+            runCountdown(() => {
+              const p = playbackRef.current
+              if (!p) return
+              prevTimeRef.current = loopStartRef.current
+              p.play()
+            })
+          }
         }
-      } else if (prev > t + 0.08 && phaseRef.current === 'go' && fullRunRef.current && scoringRef.current) {
-        gradeLoop()
       }
     })
 
@@ -422,7 +469,9 @@ export function Practice() {
           if (hint !== noBodyShownRef.current) { noBodyShownRef.current = hint; setNoBody(hint) }
         })
         lastBodyMsRef.current = performance.now()
-        engine.start(); engine.startRecording()
+        // Detection runs continuously (so the camera is warm and the live meter works the
+        // moment a test starts); takes are only RECORDED during a test (startTest).
+        engine.start()
         setCamStatus('ready')
       } catch (e) {
         if (disposed) return
@@ -447,7 +496,7 @@ export function Practice() {
     const ro = new ResizeObserver(() => cs.forEach(sizeCanvas))
     cs.forEach((c) => ro.observe(c))
     return () => ro.disconnect()
-  }, [videoUrl, cameraOn, camStatus, phase])
+  }, [videoUrl, cameraOn, camStatus, phase, segMode])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -486,18 +535,69 @@ export function Practice() {
     return () => vc.stop()
   }, [voiceOn])
 
-  function gradeLoop() {
+  function flashToast(msg: string) { setToast(msg); window.setTimeout(() => setToast(null), 2400) }
+
+  // ---- The camera test: watch → "Got it" → perform it on camera to the music → score ----
+
+  /** Leave any in-flight test cleanly (navigation, segment switch, exit). */
+  function exitTestFlow() {
+    testActiveRef.current = false
+    setSegMode('watch'); segModeRef.current = 'watch'
+    setTestResult(null); setTestError(null)
+  }
+
+  /** "Got it" → your turn: the camera takes over, the segment's music plays once, and the
+   *  engine records your take. Without a camera, Got it just completes the segment. */
+  function startTest() {
+    if (!scoringRef.current) { completeSegment(); return }
+    clearCountdown()
+    const pb = playbackRef.current
+    if (!pb) return
+    pb.pause(); setPlaying(false)
+    setTestResult(null); setTestError(null)
+    setMeter(0)
+    setSegMode('test'); segModeRef.current = 'test'
+    setLoopRegion(loopStartRef.current, loopEndRef.current) // back to the segment start
+    runCountdown(() => {
+      const p = playbackRef.current
+      if (!p) return
+      prevTimeRef.current = loopStartRef.current
+      testActiveRef.current = true
+      engineRef.current?.startRecording()
+      p.play(); setPlaying(true)
+    }, 'Your turn in', 3)
+  }
+
+  /** The segment finished playing during a test: grade the take in detail. */
+  function finishTest() {
+    setPlaying(false)
     const eng = engineRef.current
     const tr = trackRef.current
-    if (!eng || !tr) return
-    const take = eng.stopRecording()
-    eng.startRecording()
-    if (take.length < 3) return
+    const take = eng ? eng.stopRecording() : []
     const refAngles = sectionAngles(tr, loopStartRef.current, loopEndRef.current)
-    if (refAngles.length < 2) return
-    setLastTake(scoreSection(refAngles, take, cfgRef.current))
+    if (take.length < 3 || refAngles.length < 2) {
+      setTestResult(null)
+      setTestError("We couldn't see you dancing — make sure your whole body is in frame, then try again.")
+    } else {
+      setTestResult(scoreSectionDetailed(refAngles, take, cfgRef.current))
+      setTestError(null)
+    }
+    setSegMode('results'); segModeRef.current = 'results'
   }
-  function flashToast(msg: string) { setToast(msg); window.setTimeout(() => setToast(null), 2400) }
+  finishTestRef.current = finishTest
+
+  function cancelTest() {
+    clearCountdown()
+    testActiveRef.current = false
+    engineRef.current?.stopRecording()
+    playbackRef.current?.pause(); setPlaying(false)
+    exitTestFlow()
+  }
+
+  function watchAgain() {
+    exitTestFlow()
+    gotoMove(moveIdxRef.current)
+  }
 
   function clearCountdown() {
     if (countdownTimerRef.current) { window.clearTimeout(countdownTimerRef.current); countdownTimerRef.current = null }
@@ -526,17 +626,16 @@ export function Practice() {
     loopStartRef.current = s
     loopEndRef.current = e
     repCounterRef.current = 0
-    setLastTake(null)
     pb.setLoop({ startSec: s, endSec: e })
     pb.seek(s)
     prevTimeRef.current = s
     lastSeekMsRef.current = performance.now()
     awaitingSeekRef.current = s
-    engineRef.current?.startRecording()
   }
 
   function gotoMove(i: number, play = true) {
     clearCountdown()
+    if (segModeRef.current !== 'watch') exitTestFlow()
     const list = movesRef.current
     const idx = Math.max(0, Math.min(i, list.length - 1))
     const m = list[idx]
@@ -550,6 +649,7 @@ export function Practice() {
   // In Full song: stay in full song, just jump the playhead to that segment and play on.
   // Otherwise: drill just that segment. Either way, hold a "Get ready" 3-2-1 countdown first.
   function reviewSegment(i: number) {
+    if (segModeRef.current !== 'watch') exitTestFlow()
     if (completedRef.current.includes(i)) {
       const next = completedRef.current.filter((x) => x !== i)
       setCompleted(next); completedRef.current = next
@@ -575,7 +675,6 @@ export function Practice() {
     runCountdown(() => {
       const p = playbackRef.current
       if (!p) return
-      engineRef.current?.startRecording()
       p.play(); setPlaying(true)
     }, 'Get ready', 3)
   }
@@ -584,7 +683,9 @@ export function Practice() {
     setLoopRegion(loopStartRef.current, loopEndRef.current)
     playbackRef.current?.play(); setPlaying(true)
   }
-  function gotIt() {
+  /** Mark the current segment complete and move on (Proceed — regardless of score). */
+  function completeSegment() {
+    exitTestFlow()
     const list = movesRef.current
     const cur = moveIdxRef.current
     const done = completedRef.current.includes(cur) ? completedRef.current : [...completedRef.current, cur]
@@ -706,6 +807,7 @@ export function Practice() {
     const pb = playbackRef.current
     if (!pb) return
     clearCountdown()
+    if (segModeRef.current !== 'watch') exitTestFlow()
     // Toggle: tapping Full song again returns to the segment you were on.
     if (fullRunRef.current) {
       gotoMove(segmentBeforeFullRef.current)
@@ -719,12 +821,13 @@ export function Practice() {
   }
 
   function togglePlay() {
+    if (segModeRef.current === 'test') return // don't let Space/Play interrupt a test take
     const pb = playbackRef.current
     if (!pb) return
     clearCountdown()
     pb.toggle()
     setPlaying(pb.isPlaying)
-    if (pb.isPlaying) { prevTimeRef.current = pb.getTime(); engineRef.current?.startRecording() }
+    if (pb.isPlaying) prevTimeRef.current = pb.getTime()
   }
   function changeRate(r: number) { setRate(r); playbackRef.current?.setRate(r) }
   function seekTo(t: number) { playbackRef.current?.seek(t); prevTimeRef.current = t; lastSeekMsRef.current = performance.now(); awaitingSeekRef.current = t }
@@ -758,6 +861,7 @@ export function Practice() {
   }
   // Jump back to the segment editor (the bounds step) without losing the trim/segments.
   function editSegments() {
+    if (segModeRef.current !== 'watch') exitTestFlow()
     playbackRef.current?.pause()
     setPlaying(false)
     setCreating(false)
@@ -777,7 +881,6 @@ export function Practice() {
       runCountdown(() => {
         const p = playbackRef.current
         if (!p) return
-        engineRef.current?.startRecording()
         p.play(); setPlaying(true)
       }, 'Get ready', 3)
     }, 60)
@@ -793,13 +896,12 @@ export function Practice() {
       case 'faster': changeRate(stepRate(rate, 1)); break
       case 'normalSpeed': changeRate(1); break
       case 'toggleMirror': setMirror((m) => !m); break
-      case 'next': gotIt(); break
+      case 'next': segModeRef.current === 'results' ? completeSegment() : startTest(); break
       case 'prev': gotoMove(nextOpen(moveIdxRef.current, -1)); break
       default: break
     }
   }
 
-  const tip = lastTake && lastTake.score < PASS_THRESHOLD && lastTake.worstLimb ? LIMB_TIP[lastTake.worstLimb] : null
   const btn = 'rounded-xl border border-line bg-ink/[0.06] px-3.5 py-2.5 text-sm font-medium text-ink/70 transition hover:border-ink/25 hover:text-ink active:scale-95'
   const chip = (on: boolean) =>
     `rounded-xl px-4 py-2 text-sm font-semibold transition ${on ? 'bg-brand text-cream shadow-glow' : 'border border-line bg-ink/[0.06] text-ink/70 hover:text-ink'}`
@@ -856,9 +958,13 @@ export function Practice() {
             <div>
               <p className="mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Camera</p>
               <div className="flex gap-2">
-                <button onClick={() => setCameraOn(true)} className={chip(cameraOn)}>On · score me</button>
+                <button onClick={() => setCameraOn(true)} className={chip(cameraOn)}>Test me after each segment</button>
                 <button onClick={() => setCameraOn(false)} className={chip(!cameraOn)}>Off · just follow</button>
               </div>
+              <p className="mt-2 text-xs text-ink/45">
+                With the camera on, ✓ Got it flips to YOUR camera: you perform the segment to the
+                music and get a score with feedback on exactly what was off.
+              </p>
             </div>
           )}
         </div>
@@ -871,6 +977,8 @@ export function Practice() {
   }
 
   const inGo = phase === 'go'
+  // The camera owns the stage during the test and sits behind the results panel.
+  const camMain = inGo && scoring && segMode !== 'watch'
 
   // ---------- PRACTICE ----------
   return (
@@ -892,8 +1000,8 @@ export function Practice() {
 
       {/* Instructor (flips when Mirror is on) */}
       <section className="relative aspect-video overflow-hidden rounded-2.5xl border border-line bg-black/60 shadow-soft">
-        {/* Which segment you're on — top-left badge (no beat count). */}
-        {inGo && (
+        {/* Which segment you're on — top-left badge (the test overlay has its own). */}
+        {inGo && !camMain && (
           <span className="absolute left-3 top-3 z-20 rounded-2xl bg-brand px-3 py-2 font-display text-sm font-bold text-cream shadow-glow">
             {fullRun ? 'Full song' : `Segment ${moveIdx + 1} of ${moves.length}`}
           </span>
@@ -905,7 +1013,7 @@ export function Practice() {
           </span>
         )}
         {/* Generated routines: toggle the synthesized backing beat. */}
-        {!videoUrl && (
+        {!videoUrl && !camMain && (
           <button
             onClick={() => setMusicOn((m) => !m)}
             title={musicOn ? 'Mute the beat' : 'Play the beat'}
@@ -914,10 +1022,21 @@ export function Practice() {
             {musicOn ? '🔊 Beat on' : '🔇 Beat off'}
           </button>
         )}
+        {/* Bail out of a camera test back to watching. */}
+        {inGo && segMode === 'test' && (
+          <button
+            onClick={cancelTest}
+            className="absolute right-3 top-3 z-20 rounded-2xl border border-line bg-black/50 px-3 py-2 text-sm font-semibold text-cream/90 backdrop-blur transition hover:border-bad/60 active:scale-95"
+          >
+            ✕ Cancel
+          </button>
+        )}
         {/* Mirror is done by flipping the CANVAS draw (see drawInstructor), never by
             CSS-transforming the <video> — that tore into a split-screen on Windows. When
-            mirrored the canvas paints the flipped video over the (untouched) <video>. */}
-        <div className="absolute inset-0">
+            mirrored the canvas paints the flipped video over the (untouched) <video>.
+            During a camera test the reference layers go invisible (NOT unmounted — the
+            video keeps playing so its music drives your take). */}
+        <div className={camMain ? 'pointer-events-none absolute inset-0 opacity-0' : 'absolute inset-0'}>
           {videoUrl ? (
             <>
               <video
@@ -961,25 +1080,88 @@ export function Practice() {
             </div>
           )}
         </div>
+        {/* YOUR CAMERA — hidden while watching (the video is the whole show), fullscreen
+            during the test and behind the results. Stays mounted so the stream is warm. */}
         {cameraOn && (
-          <div className="absolute bottom-3 right-3 z-20 w-[34%] max-w-[230px] overflow-hidden rounded-xl border border-brand/50 bg-black/60 shadow-soft">
-            <div className="relative aspect-video">
-              <div className="mirror absolute inset-0">
-                <video ref={webcamVideoRef} className="h-full w-full object-cover" playsInline muted />
-                <canvas ref={webcamCanvasRef} className="absolute inset-0 h-full w-full" />
-              </div>
-              {camStatus !== 'ready' && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/70 p-2 text-center">
-                  {camStatus === 'init'
-                    ? <div className="h-5 w-5 animate-spin rounded-full border-2 border-cream/30 border-t-cream" />
-                    : <p className="text-[11px] text-bad">{camError ?? 'No camera'}</p>}
-                </div>
-              )}
-              {scoring && camStatus === 'ready' && noBody && (
-                <p className="absolute inset-x-0 bottom-1 text-center text-[10px] text-warn">step into frame</p>
-              )}
+          <div className={camMain ? 'absolute inset-0 z-10 bg-black' : 'absolute inset-0 z-10 hidden'}>
+            <div className="mirror absolute inset-0">
+              <video ref={webcamVideoRef} className="h-full w-full object-cover" playsInline muted />
+              <canvas ref={webcamCanvasRef} className="absolute inset-0 h-full w-full" />
             </div>
-            {scoring && <div className="px-2 pb-2 pt-1"><AccuracyMeter score={meter} compact label="Match" /></div>}
+            {camStatus !== 'ready' && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/70 p-2 text-center">
+                {camStatus === 'init'
+                  ? <div className="h-6 w-6 animate-spin rounded-full border-2 border-cream/30 border-t-cream" />
+                  : <p className="text-sm text-bad">{camError ?? 'No camera'}</p>}
+              </div>
+            )}
+            {segMode === 'test' && (
+              <>
+                <span className="absolute left-3 top-3 z-20 rounded-2xl bg-brand2 px-3 py-2 font-display text-sm font-bold text-[#06222a] shadow-soft">
+                  🎥 Your turn — dance it!
+                </span>
+                {camStatus === 'ready' && noBody && (
+                  <p className="absolute inset-x-0 bottom-16 text-center text-sm font-semibold text-warn drop-shadow">step into frame</p>
+                )}
+                <div className="absolute inset-x-4 bottom-3"><AccuracyMeter score={meter} compact label="Match" /></div>
+              </>
+            )}
+          </div>
+        )}
+        {/* RESULTS — your rating and exactly where it went wrong, then Proceed. */}
+        {inGo && segMode === 'results' && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2.5xl border border-line bg-panel/95 p-5 shadow-soft">
+              {testError ? (
+                <>
+                  <p className="font-display text-lg font-bold">Hmm — no dancer detected 🤔</p>
+                  <p className="mt-2 text-sm text-ink/60">{testError}</p>
+                </>
+              ) : testResult ? (
+                <>
+                  <div className="flex items-end justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-wider text-ink/45">Your match</p>
+                      <p className="font-display text-5xl font-bold" style={{ color: scoreVerdict(testResult.score).color }}>
+                        {Math.round(testResult.score)}%
+                      </p>
+                    </div>
+                    <p className="pb-1 text-sm font-semibold" style={{ color: scoreVerdict(testResult.score).color }}>
+                      {scoreVerdict(testResult.score).label}
+                    </p>
+                  </div>
+                  <div className="mt-4 space-y-1.5">
+                    {(Object.entries(testResult.perLimb) as [Limb, { errorDeg: number; ok: boolean }][]).map(([limb, res]) => (
+                      <div key={limb} className="flex items-center gap-2">
+                        <span className="w-20 shrink-0 text-xs text-ink/55">{LIMB_LABEL[limb]}</span>
+                        <div className="h-2 flex-1 overflow-hidden rounded-full bg-ink/10">
+                          <div
+                            className="h-full rounded-full"
+                            style={{ width: `${limbQuality(res.errorDeg)}%`, background: res.ok ? '#a3e635' : '#ff9f1c' }}
+                          />
+                        </div>
+                        <span className="w-9 shrink-0 text-right text-xs tabular-nums text-ink/45">{limbQuality(res.errorDeg)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                  <ul className="mt-4 space-y-1.5">
+                    {feedbackLines(testResult).map((line, i) => (
+                      <li key={i} className="text-sm text-ink/70">· {line}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+              <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                <button onClick={watchAgain} className={btn}>👁 Watch again</button>
+                <button onClick={startTest} className={btn}>↻ Try again</button>
+                <button
+                  onClick={completeSegment}
+                  className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
+                >
+                  Proceed →
+                </button>
+              </div>
+            </div>
           </div>
         )}
         {countdown > 0 && (
@@ -1078,7 +1260,7 @@ export function Practice() {
             Start practicing ▶
           </button>
         </div>
-      ) : (
+      ) : segMode === 'watch' ? (
         <>
           {/* Transport */}
           <div className="flex flex-wrap items-center justify-center gap-2">
@@ -1100,11 +1282,13 @@ export function Practice() {
             )}
           </div>
 
-          {/* Got it / repeat */}
+          {/* Got it (→ camera test) / repeat */}
           <div className="flex flex-wrap items-center justify-center gap-2">
             <button onClick={() => gotoMove(nextOpen(moveIdx, -1))} className={btn + ' !px-3'}>‹ prev</button>
             <button onClick={repeatMove} className="rounded-xl border border-line bg-ink/[0.06] px-5 py-2.5 text-sm font-semibold text-ink/80 transition hover:text-ink active:scale-95">↻ Repeat</button>
-            <button onClick={gotIt} className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95">✓ Got it</button>
+            <button onClick={startTest} className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95">
+              {scoring ? '✓ Got it — test me' : '✓ Got it'}
+            </button>
             <button onClick={() => gotoMove(nextOpen(moveIdx, 1))} className={btn + ' !px-3'}>skip ›</button>
           </div>
 
@@ -1112,16 +1296,21 @@ export function Practice() {
           <div className="flex min-h-[24px] items-center justify-center text-sm">
             {toast ? (
               <span className="rounded-full bg-good/20 px-3 py-1 font-semibold text-good">{toast}</span>
-            ) : lastTake ? (
-              <span className="text-ink/70">
-                Last: <b style={{ color: lastTake.score >= PASS_THRESHOLD ? '#a3e635' : '#ff9f1c' }}>{Math.round(lastTake.score)}%</b>
-                {tip && <span className="text-ink/45"> · {tip}</span>}
-              </span>
             ) : (
-              <span className="text-ink/40">Drill this segment, then ✓ Got it for the next one.</span>
+              <span className="text-ink/40">
+                {scoring
+                  ? 'Watch and drill this segment, then ✓ Got it — the camera tests you on it.'
+                  : 'Drill this segment, then ✓ Got it for the next one.'}
+              </span>
             )}
           </div>
         </>
+      ) : (
+        <div className="flex min-h-[24px] items-center justify-center text-sm">
+          <span className="text-ink/40">
+            {segMode === 'test' ? '🎥 Dance the segment — you’re being scored.' : 'Check your feedback above.'}
+          </span>
+        </div>
       )}
 
       {cameraOn && cameras.length > 0 && (

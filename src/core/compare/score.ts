@@ -72,3 +72,41 @@ export function scoreSection(
     pairs: path.length,
   }
 }
+
+export type SectionPhase = 'start' | 'middle' | 'end'
+
+export interface PhaseScore {
+  phase: SectionPhase
+  score: number
+}
+
+/** SectionScore plus WHERE in the segment it went wrong (start / middle / end). */
+export interface DetailedSectionScore extends SectionScore {
+  phases: PhaseScore[]
+}
+
+const PHASES: readonly SectionPhase[] = ['start', 'middle', 'end']
+
+/**
+ * Score a take with a per-phase breakdown: the reference and the take are each cut into
+ * thirds (by time order) and scored independently, so feedback can say not just WHAT was
+ * off (worst limb) but WHEN (e.g. "the ending slipped"). Sequences too short to cut
+ * meaningfully return no phases.
+ */
+export function scoreSectionDetailed(
+  refAngles: number[][],
+  liveAngles: number[][],
+  cfg: ScoreConfig = STRICT,
+  dtwOptions?: DtwOptions,
+): DetailedSectionScore {
+  const overall = scoreSection(refAngles, liveAngles, cfg, dtwOptions)
+  const phases: PhaseScore[] = []
+  if (refAngles.length >= 6 && liveAngles.length >= 6) {
+    for (let i = 0; i < 3; i++) {
+      const r = refAngles.slice(Math.floor((refAngles.length * i) / 3), Math.ceil((refAngles.length * (i + 1)) / 3))
+      const l = liveAngles.slice(Math.floor((liveAngles.length * i) / 3), Math.ceil((liveAngles.length * (i + 1)) / 3))
+      phases.push({ phase: PHASES[i]!, score: scoreSection(r, l, cfg, dtwOptions).score })
+    }
+  }
+  return { ...overall, phases }
+}

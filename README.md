@@ -22,9 +22,15 @@ On first open it generates a bundled **demo routine** (with a synthesized backin
 🔊 toggle on the stage) so you can try the whole flow with zero setup. Use the upload box
 to learn your own tutorial videos.
 
-Uploaded videos always show the **real footage** — with Mirror so it matches how you're
-facing, and your camera beside it when scoring is on. Built-in routines (which have no
-video) are instead performed by a **3D dance silhouette** (Just-Dance style): a glowing
+The practice loop is **watch → test → feedback**: you watch and drill each segment
+(uploaded videos always show the **real footage**, with Mirror so it matches how you're
+facing), then hit **✓ Got it** — the view flips to YOUR camera, the segment's music plays,
+you perform it, and you get a score with detailed feedback: per-limb accuracy bars, how
+far each limb drifted (in degrees), and whether the beginning, middle, or ending slipped.
+Then **Proceed** moves on — your call, whatever the score — or Try again / Watch again.
+
+Built-in routines (which have no video) are performed by a **3D dance silhouette**
+(Just-Dance style): a glowing
 flat-color male dancer in everyday clothes on a rim-lit stage, driven frame-by-frame by
 the stored pose with a direction-exact solver (arms fold behind the head, bodies turn a
 full 360° — moves that off-the-shelf pose solvers clamp away), with head/neck tracking,
