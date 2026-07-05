@@ -22,17 +22,13 @@ On first open it generates a bundled **demo routine** (with a synthesized backin
 🔊 toggle on the stage) so you can try the whole flow with zero setup. Use the upload box
 to learn your own tutorial videos.
 
-The instructor is a **3D dance silhouette** (Just-Dance style): a glowing flat-color
-male dancer in everyday clothes (t-shirt, shorts, sneakers — a real human figure, not a
-mannequin) on a rim-lit stage performs every routine — the demo and anything you upload —
-driven frame-by-frame by the tracked pose with a direction-exact solver (arms
-fold behind the head, bodies turn a full 360° — moves that off-the-shelf pose solvers
-clamp away). Full-body mechanics: head and neck follow the tracked face, shoulders shrug
-naturally as arms rise, fingers hold a relaxed dancer's curl, feet stay planted on the
-stage and never dip through it, he casts a real-time shadow, and on uploaded videos he
-travels the stage with the instructor — side to side AND toward/away from the camera.
-During practice on an uploaded video, toggle **🕺 3D dancer** to switch between the dancer
-and the original footage.
+Uploaded videos always show the **real footage** — with Mirror so it matches how you're
+facing, and your camera beside it when scoring is on. Built-in routines (which have no
+video) are instead performed by a **3D dance silhouette** (Just-Dance style): a glowing
+flat-color male dancer in everyday clothes on a rim-lit stage, driven frame-by-frame by
+the stored pose with a direction-exact solver (arms fold behind the head, bodies turn a
+full 360° — moves that off-the-shelf pose solvers clamp away), with head/neck tracking,
+shoulder shrugs, planted feet, and a real-time shadow.
 
 **Controls:** Play/Pause (or **Spacebar**), slow-mo (1× / 0.75× / 0.5×, pitch-preserved),
 **Mirror**, **Loop** the current 8-count, and a per-section restart. A live **8-count number**

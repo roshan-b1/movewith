@@ -104,8 +104,6 @@ export function Practice() {
   const [activeCam, setActiveCam] = useState<string | null>(null)
   const [voiceOn, setVoiceOn] = useState(false)
   const voiceSupported = useMemo(() => VoiceController.isSupported(), [])
-  // 3D dancer: on by default; falls back to the classic 2D drawing if the model fails.
-  const [avatar3d, setAvatar3d] = useState(true)
   const [avatarStatus, setAvatarStatus] = useState<AvatarStatus>('loading')
   // Synthesized backing beat for generated routines (no video = no audio track of its own).
   const [musicOn, setMusicOn] = useState(true)
@@ -166,11 +164,6 @@ export function Practice() {
     if (pb) pb.seek(pb.getTime())
   }, [mirror])
   useEffect(() => void (phaseRef.current = phase), [phase])
-  // Toggling the 3D dancer swaps render paths — force a redraw so it shows while paused.
-  useEffect(() => {
-    const pb = playbackRef.current
-    if (pb) pb.seek(pb.getTime())
-  }, [avatar3d])
   useEffect(() => { trimStartRef.current = trimStart; trimEndRef.current = trimEnd }, [trimStart, trimEnd])
   // Keep skip state + the controller's skip ranges (for full-song playback) in sync.
   useEffect(() => {
@@ -204,13 +197,12 @@ export function Practice() {
     engineRef.current?.setConfig(cfg)
   }, [rate])
 
-  // When to show the rigged 3D dancer: whenever there are landmark frames to drive it.
-  // Demo routine: always (it replaces the old geometric silhouette). Uploaded videos: during
-  // practice, when the dancer toggle is on (the real video stays for segment editing).
+  // The 3D dancer performs ONLY our generated routines (no video of their own — the demo
+  // and future built-in tutorials). Uploaded videos always show the real footage: the
+  // dancer is the instructor for content we author, never a replacement for the video.
   // If the model ever fails to load we quietly fall back to the classic 2D drawing.
   const hasFrames = track.frames.length > 0
-  const showAvatar =
-    hasFrames && avatarStatus !== 'error' && (videoUrl ? phase === 'go' && avatar3d : phase !== 'setup')
+  const showAvatar = hasFrames && avatarStatus !== 'error' && !videoUrl && phase !== 'setup'
 
   // 3D dancer lifecycle: create it when its canvas is on screen, tear down when hidden.
   useEffect(() => {
@@ -1101,15 +1093,6 @@ export function Practice() {
               ))}
             </div>
             <button onClick={() => setMirror((m) => !m)} className={mirror ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}>🪞 Mirror</button>
-            {videoUrl && hasFrames && avatarStatus !== 'error' && (
-              <button
-                onClick={() => setAvatar3d((v) => !v)}
-                className={avatar3d ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}
-                title="Follow a 3D dancer instead of the video"
-              >
-                🕺 3D dancer
-              </button>
-            )}
             <button onClick={playAll} className={fullRun ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn} title="Practice the whole song start to finish">▶ Full song</button>
             <button onClick={editSegments} className={btn} title="Go back and edit the segments">✎ Edit segments</button>
             {voiceSupported && (
