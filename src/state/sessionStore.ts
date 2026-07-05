@@ -5,7 +5,9 @@
 import { create } from 'zustand'
 import type { ReferenceTrack, DanceProgress } from '../core/reference/types'
 import { generateDemoDance, DEMO_TRACK_ID, OLD_DEMO_TRACK_IDS } from '../core/demo/demoDance'
-import { generateMacarena, MACARENA_TRACK_ID, OLD_MACARENA_TRACK_IDS } from '../core/demo/macarena'
+
+// Bundled routines that no longer exist — cleaned out of returning users' libraries.
+const REMOVED_TRACK_IDS = ['macarena-v1']
 import { extractReferenceFromVideo, type ExtractProgress } from '../engine/extractReference'
 import { getPoseProvider } from '../providers/instance'
 import {
@@ -57,16 +59,13 @@ export const useSession = create<SessionState>((set, get) => ({
   async init() {
     set({ status: 'loading', error: null })
     try {
-      // Ensure the bundled routines exist so the app is usable on first open.
-      // Older generator versions are replaced (their output changed).
-      for (const old of [...OLD_DEMO_TRACK_IDS, ...OLD_MACARENA_TRACK_IDS]) {
+      // Ensure the bundled demo exists so the app is usable on first open. Older
+      // generator versions and removed bundled routines are cleaned up.
+      for (const old of [...OLD_DEMO_TRACK_IDS, ...REMOVED_TRACK_IDS]) {
         if (await getTrack(old)) await deleteTrack(old)
       }
       if (!(await getTrack(DEMO_TRACK_ID))) {
         await saveTrack(generateDemoDance(Date.now()))
-      }
-      if (!(await getTrack(MACARENA_TRACK_ID))) {
-        await saveTrack(generateMacarena(Date.now()))
       }
       set({ tracks: await listTracks(), status: 'idle' })
     } catch (e) {

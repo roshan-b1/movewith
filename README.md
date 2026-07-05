@@ -18,13 +18,12 @@ npm run dev      # open the printed http://localhost:5173 in a real browser tab
 > and the webcam (`getUserMedia`), which browsers suspend in hidden/headless tabs. Allow
 > camera access when prompted.
 
-On first open it generates two bundled routines so you can try the whole flow with zero
-setup: a **warm-up demo** and the **Macarena** — the full classic 16-count sequence with
-the quarter-turn jump, four times around, with a synthesized backing beat (🔊 toggle on
-the stage). Use the upload box to learn your own tutorial videos.
+On first open it generates a bundled **demo routine** (with a synthesized backing beat —
+🔊 toggle on the stage) so you can try the whole flow with zero setup. Use the upload box
+to learn your own tutorial videos.
 
-The instructor is a **rigged 3D dancer** (Just-Dance style): a matte-black male silhouette
-mannequin on a rim-lit stage performs every routine — the bundled ones and anything you
+The instructor is a **3D dance silhouette** (Just-Dance style): a glowing flat-color male
+figure on a rim-lit stage performs every routine — the demo and anything you
 upload — driven frame-by-frame by the tracked pose with a direction-exact solver (arms
 fold behind the head, bodies turn a full 360° — moves that off-the-shelf pose solvers
 clamp away). Full-body mechanics: head and neck follow the tracked face, shoulders shrug

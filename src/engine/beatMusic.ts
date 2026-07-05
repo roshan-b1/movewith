@@ -1,4 +1,4 @@
-// Synthesized backing music for GENERATED routines (the demo, Macarena). Bundled
+// Synthesized backing music for GENERATED routines (the bundled demo). Bundled
 // recordings are a licensing problem, so instead a small WebAudio drum-and-bass groove
 // is scheduled live against the PlaybackController's clock: latin percussion (kick,
 // clap, shaker, woodblock) plus a two-chord bass vamp, at the routine's BPM. Follows

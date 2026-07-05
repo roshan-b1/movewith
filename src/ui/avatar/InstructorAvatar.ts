@@ -6,8 +6,8 @@
 // bone vector (shoulder→elbow, elbow→wrist, hip→knee, knee→ankle), the hips/torso follow
 // a full orientation basis built from the hip and shoulder lines (works through full-body
 // turns), and the head follows the face landmarks. This places hands and feet exactly
-// where the data says — including folds behind the body (Macarena!) that heuristic
-// solvers clamp away. Targets are applied with slerp smoothing, which doubles as
+// where the data says — including folds behind the body that heuristic solvers clamp
+// away. Targets are applied with slerp smoothing, which doubles as
 // interpolation between ~30fps pose data and 60fps rendering.
 //
 // Landmark space: x = person's left, y = down, z = toward camera NEGATIVE (hip-centered).
@@ -27,8 +27,10 @@ export type AvatarStatus = 'loading' | 'ready' | 'error'
 const MODEL_URL = '/models/instructor.glb'
 
 // Smoothing rates (frame-rate independent): slerp factor = 1 - e^(-K·dt).
-const K_ROT = 12
-const K_POS = 3
+// K_ROT is deliberately fast (~0.2s settle) so dance hits land crisp — heavier smoothing
+// blurs one move into the next at real song tempos.
+const K_ROT = 20
+const K_POS = 4
 
 /** The humanoid parts we drive → the mannequin's Mixamo bone names. */
 const BONE_MAP = {
@@ -240,16 +242,27 @@ export class InstructorAvatar {
       // their pre-clip default pose. The mixer is simply dropped; the T-pose values stay.
     }
 
-    // The whole figure is one MATTE BLACK SILHOUETTE — soft charcoal body, no chrome —
-    // with just enough sheen for the colored rim lights to define the edges.
-    const silhouette = new THREE.MeshPhysicalMaterial({
-      color: 0x0c0e14,
-      metalness: 0.1,
-      roughness: 0.6,
-      clearcoat: 0.3,
-      clearcoatRoughness: 0.55,
+    // JUST-DANCE-STYLE SILHOUETTE: one flat, unlit color over the whole figure — no
+    // shading at all, so the rig's segmented "robot" surface detail disappears into a
+    // single clean dancer shape — plus a glowing fresnel edge that outlines him against
+    // the stage, like the game's coaches. (Emissive-only: the black diffuse ignores the
+    // scene lights; they only exist for the ground shadow.)
+    const silhouette = new THREE.MeshStandardMaterial({
+      color: 0x000000,
+      emissive: 0xb01fd6,
+      emissiveIntensity: 0.9,
+      roughness: 1,
+      metalness: 0,
     })
-    silhouette.envMapIntensity = 0.35
+    silhouette.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        // Fresnel edge glow: brighter toward grazing angles = a glowing outline.
+        float fres = pow(1.0 - saturate(dot(normalize(vNormal), normalize(vViewPosition))), 2.2);
+        totalEmissiveRadiance += vec3(1.0, 0.45, 0.95) * fres * 1.4;`,
+      )
+    }
     model.traverse((o) => {
       // Skinned bounds are wrong mid-dance; never cull the dancer's limbs.
       o.frustumCulled = false
