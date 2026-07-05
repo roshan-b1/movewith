@@ -22,9 +22,10 @@ On first open it generates a bundled **demo routine** (with a synthesized backin
 🔊 toggle on the stage) so you can try the whole flow with zero setup. Use the upload box
 to learn your own tutorial videos.
 
-The instructor is a **3D dance silhouette** (Just-Dance style): a glowing flat-color male
-figure on a rim-lit stage performs every routine — the demo and anything you
-upload — driven frame-by-frame by the tracked pose with a direction-exact solver (arms
+The instructor is a **3D dance silhouette** (Just-Dance style): a glowing flat-color
+human dancer — a real clothed figure, not a mannequin — on a rim-lit stage performs every
+routine — the demo and anything you upload — driven frame-by-frame by the tracked pose
+with a direction-exact solver (arms
 fold behind the head, bodies turn a full 360° — moves that off-the-shelf pose solvers
 clamp away). Full-body mechanics: head and neck follow the tracked face, shoulders shrug
 naturally as arms rise, fingers hold a relaxed dancer's curl, feet stay planted on the
