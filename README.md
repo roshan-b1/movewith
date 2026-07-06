@@ -27,7 +27,9 @@ The practice loop is **watch → test → feedback**: you watch and drill each s
 facing), then hit **✓ Got it** — the view flips to YOUR camera, the segment's music plays,
 you perform it, and you get a score with detailed feedback: per-limb accuracy bars, how
 far each limb drifted (in degrees), and whether the beginning, middle, or ending slipped.
-Then **Proceed** moves on — your call, whatever the score — or Try again / Watch again.
+Your take is recorded, so **🎬 Side by side** replays YOU next to the instructor for the
+same segment. Then **Proceed** moves on — your call, whatever the score — or Try again /
+Watch again.
 
 Built-in routines (which have no video) are performed by a **3D dance silhouette**
 (Just-Dance style): a glowing

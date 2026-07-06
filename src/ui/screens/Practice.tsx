@@ -135,10 +135,12 @@ export function Practice() {
   const [camError, setCamError] = useState<string | null>(null)
   const [noBody, setNoBody] = useState(false)
   // Per-segment flow: WATCH the video → "Got it" → TEST on camera with the music →
-  // RESULTS (score + feedback) → Proceed. The test/results steps need the camera.
-  const [segMode, setSegMode] = useState<'watch' | 'test' | 'results'>('watch')
+  // RESULTS (score + feedback) → optional side-by-side REPLAY of your take → Proceed.
+  const [segMode, setSegMode] = useState<'watch' | 'test' | 'results' | 'replay'>('watch')
   const [testResult, setTestResult] = useState<DetailedSectionScore | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
+  /** Object URL of the camera recording captured during the last test. */
+  const [takeUrl, setTakeUrl] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([])
   const [activeCam, setActiveCam] = useState<string | null>(null)
@@ -194,10 +196,15 @@ export function Practice() {
   const completedRef = useRef<number[]>([])
   const countdownTimerRef = useRef<number | null>(null)
   const voiceHandlerRef = useRef<(c: VoiceCommand) => void>(() => {})
-  const segModeRef = useRef<'watch' | 'test' | 'results'>('watch')
+  const segModeRef = useRef<'watch' | 'test' | 'results' | 'replay'>('watch')
   /** True while the camera-test take is being recorded (segment playing once through). */
   const testActiveRef = useRef(false)
   const finishTestRef = useRef<() => void>(() => {})
+  const cancelTestRef = useRef<() => void>(() => {})
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const takeChunksRef = useRef<Blob[]>([])
+  const takeUrlRef = useRef<string | null>(null)
+  const takeVideoRef = useRef<HTMLVideoElement | null>(null)
   useEffect(() => void (segModeRef.current = segMode), [segMode])
   useEffect(() => void (completedRef.current = completed), [completed])
 
@@ -378,6 +385,9 @@ export function Practice() {
           // The camera test plays the segment exactly once — the wrap is the finish line.
           testActiveRef.current = false
           finishTestRef.current()
+        } else if (segModeRef.current === 'replay') {
+          // Side-by-side replay ran the segment once; hold at the end for ▶ Replay.
+          // (The take video simply ends on its own.)
         } else {
           repCounterRef.current += 1
           const reachedLimit = repsRef.current !== Infinity && repCounterRef.current >= repsRef.current
@@ -511,12 +521,21 @@ export function Practice() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase])
 
+  // Tidy up the take recording on unmount (stop the recorder, free the blob URL).
+  useEffect(() => () => {
+    try { recorderRef.current?.stop() } catch { /* already stopped */ }
+    if (takeUrlRef.current) URL.revokeObjectURL(takeUrlRef.current)
+  }, [])
+
   // Pause when the tab is hidden. The browser suspends requestAnimationFrame while hidden,
   // so the segment-loop logic stops but the <video> keeps playing — which would otherwise
   // run straight past the segment through the whole song. Pause like a video player does.
   useEffect(() => {
     const onVis = () => {
       if (!document.hidden) return
+      // A hidden tab freezes the clock mid-take — abandon the test cleanly instead of
+      // leaving it stuck; the dancer can just hit Got it again when they're back.
+      if (testActiveRef.current) cancelTestRef.current()
       playbackRef.current?.pause()
       if (countdownTimerRef.current) { window.clearTimeout(countdownTimerRef.current); countdownTimerRef.current = null }
       setCountdown(0)
@@ -539,9 +558,45 @@ export function Practice() {
 
   // ---- The camera test: watch → "Got it" → perform it on camera to the music → score ----
 
+  /** Record the camera during a take so it can be replayed side by side afterwards. */
+  function startTakeRecording() {
+    dropTakeRecording()
+    const stream = webcamVideoRef.current?.srcObject as MediaStream | null
+    if (!stream || typeof MediaRecorder === 'undefined') return
+    try {
+      const mime = ['video/webm;codecs=vp9', 'video/webm', 'video/mp4'].find((m) => MediaRecorder.isTypeSupported(m))
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
+      takeChunksRef.current = []
+      rec.ondataavailable = (e) => { if (e.data.size > 0) takeChunksRef.current.push(e.data) }
+      rec.onstop = () => {
+        if (takeChunksRef.current.length === 0) return
+        const url = URL.createObjectURL(new Blob(takeChunksRef.current, { type: rec.mimeType || 'video/webm' }))
+        takeUrlRef.current = url
+        setTakeUrl(url)
+      }
+      rec.start()
+      recorderRef.current = rec
+    } catch { /* recording is a bonus — the test still scores without it */ }
+  }
+  function stopTakeRecording(keep: boolean) {
+    const rec = recorderRef.current
+    recorderRef.current = null
+    if (!rec) return
+    if (!keep) rec.onstop = null
+    try { rec.stop() } catch { /* already stopped */ }
+    if (!keep) takeChunksRef.current = []
+  }
+  function dropTakeRecording() {
+    stopTakeRecording(false)
+    if (takeUrlRef.current) { URL.revokeObjectURL(takeUrlRef.current); takeUrlRef.current = null }
+    setTakeUrl(null)
+  }
+
   /** Leave any in-flight test cleanly (navigation, segment switch, exit). */
   function exitTestFlow() {
     testActiveRef.current = false
+    takeVideoRef.current?.pause()
+    dropTakeRecording()
     setSegMode('watch'); segModeRef.current = 'watch'
     setTestResult(null); setTestError(null)
   }
@@ -564,6 +619,7 @@ export function Practice() {
       prevTimeRef.current = loopStartRef.current
       testActiveRef.current = true
       engineRef.current?.startRecording()
+      startTakeRecording()
       p.play(); setPlaying(true)
     }, 'Your turn in', 3)
   }
@@ -571,6 +627,7 @@ export function Practice() {
   /** The segment finished playing during a test: grade the take in detail. */
   function finishTest() {
     setPlaying(false)
+    stopTakeRecording(true) // finalize the camera recording for side-by-side replay
     const eng = engineRef.current
     const tr = trackRef.current
     const take = eng ? eng.stopRecording() : []
@@ -590,13 +647,41 @@ export function Practice() {
     clearCountdown()
     testActiveRef.current = false
     engineRef.current?.stopRecording()
+    dropTakeRecording()
     playbackRef.current?.pause(); setPlaying(false)
     exitTestFlow()
   }
+  cancelTestRef.current = cancelTest
 
   function watchAgain() {
     exitTestFlow()
     gotoMove(moveIdxRef.current)
+  }
+
+  // ---- Side-by-side replay: the reference segment and YOUR recorded take, together ----
+
+  function startReplay() {
+    if (!takeUrlRef.current) return
+    playbackRef.current?.pause()
+    setSegMode('replay'); segModeRef.current = 'replay'
+    window.setTimeout(replayBoth, 80) // let the take <video> mount before playing
+  }
+  /** (Re)start both sides in sync from the top of the segment. */
+  function replayBoth() {
+    const pb = playbackRef.current
+    if (!pb) return
+    pb.seek(loopStartRef.current)
+    prevTimeRef.current = loopStartRef.current
+    awaitingSeekRef.current = loopStartRef.current
+    lastSeekMsRef.current = performance.now()
+    const tv = takeVideoRef.current
+    if (tv) { tv.currentTime = 0; void tv.play().catch(() => {}) }
+    pb.play(); setPlaying(true)
+  }
+  function backToResults() {
+    playbackRef.current?.pause(); setPlaying(false)
+    takeVideoRef.current?.pause()
+    setSegMode('results'); segModeRef.current = 'results'
   }
 
   function clearCountdown() {
@@ -821,7 +906,8 @@ export function Practice() {
   }
 
   function togglePlay() {
-    if (segModeRef.current === 'test') return // don't let Space/Play interrupt a test take
+    // Don't let Space/Play interrupt a test take or desync the side-by-side replay.
+    if (segModeRef.current === 'test' || segModeRef.current === 'replay') return
     const pb = playbackRef.current
     if (!pb) return
     clearCountdown()
@@ -896,7 +982,7 @@ export function Practice() {
       case 'faster': changeRate(stepRate(rate, 1)); break
       case 'normalSpeed': changeRate(1); break
       case 'toggleMirror': setMirror((m) => !m); break
-      case 'next': segModeRef.current === 'results' ? completeSegment() : startTest(); break
+      case 'next': segModeRef.current === 'results' || segModeRef.current === 'replay' ? completeSegment() : startTest(); break
       case 'prev': gotoMove(nextOpen(moveIdxRef.current, -1)); break
       default: break
     }
@@ -978,7 +1064,9 @@ export function Practice() {
 
   const inGo = phase === 'go'
   // The camera owns the stage during the test and sits behind the results panel.
-  const camMain = inGo && scoring && segMode !== 'watch'
+  const camMain = inGo && scoring && (segMode === 'test' || segMode === 'results')
+  // Side-by-side replay: reference on the left, your recorded take on the right.
+  const replaying = inGo && segMode === 'replay' && !!takeUrl
 
   // ---------- PRACTICE ----------
   return (
@@ -1035,8 +1123,9 @@ export function Practice() {
             CSS-transforming the <video> — that tore into a split-screen on Windows. When
             mirrored the canvas paints the flipped video over the (untouched) <video>.
             During a camera test the reference layers go invisible (NOT unmounted — the
-            video keeps playing so its music drives your take). */}
-        <div className={camMain ? 'pointer-events-none absolute inset-0 opacity-0' : 'absolute inset-0'}>
+            video keeps playing so its music drives your take). In side-by-side replay
+            they shrink to the LEFT HALF, with your recorded take on the right. */}
+        <div className={camMain ? 'pointer-events-none absolute inset-0 opacity-0' : replaying ? 'absolute inset-y-0 left-0 w-1/2' : 'absolute inset-0'}>
           {videoUrl ? (
             <>
               <video
@@ -1108,6 +1197,26 @@ export function Practice() {
             )}
           </div>
         )}
+        {/* SIDE-BY-SIDE REPLAY — the reference next to YOUR recorded take. */}
+        {replaying && (
+          <>
+            <div className="absolute inset-y-0 right-0 w-1/2 border-l border-line bg-black">
+              <video
+                ref={takeVideoRef}
+                src={takeUrl ?? undefined}
+                className="mirror h-full w-full object-contain"
+                playsInline
+                muted
+              />
+            </div>
+            <span className="absolute bottom-3 left-3 z-20 rounded-xl bg-black/60 px-2.5 py-1 text-xs font-semibold text-cream/85 backdrop-blur">
+              Instructor
+            </span>
+            <span className="absolute bottom-3 right-3 z-20 rounded-xl bg-brand2/90 px-2.5 py-1 text-xs font-bold text-[#06222a]">
+              You
+            </span>
+          </>
+        )}
         {/* RESULTS — your rating and exactly where it went wrong, then Proceed. */}
         {inGo && segMode === 'results' && (
           <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
@@ -1152,6 +1261,11 @@ export function Practice() {
                 </>
               ) : null}
               <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                {takeUrl && (
+                  <button onClick={startReplay} className={btn + ' !border-brand2/50'} title="Watch your take next to the instructor">
+                    🎬 Side by side
+                  </button>
+                )}
                 <button onClick={watchAgain} className={btn}>👁 Watch again</button>
                 <button onClick={startTest} className={btn}>↻ Try again</button>
                 <button
@@ -1305,6 +1419,19 @@ export function Practice() {
             )}
           </div>
         </>
+      ) : segMode === 'replay' ? (
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <button onClick={replayBoth} className="rounded-xl bg-brand px-6 py-2.5 text-sm font-semibold text-cream shadow-glow transition hover:brightness-105 active:scale-95">
+            ▶ Replay
+          </button>
+          <button onClick={backToResults} className={btn}>‹ Back to feedback</button>
+          <button
+            onClick={completeSegment}
+            className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
+          >
+            Proceed →
+          </button>
+        </div>
       ) : (
         <div className="flex min-h-[24px] items-center justify-center text-sm">
           <span className="text-ink/40">
