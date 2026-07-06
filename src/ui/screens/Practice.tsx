@@ -141,6 +141,10 @@ export function Practice() {
   const [testError, setTestError] = useState<string | null>(null)
   /** Object URL of the camera recording captured during the last test. */
   const [takeUrl, setTakeUrl] = useState<string | null>(null)
+  // The camera owns the stage during the test and sits behind the results panel.
+  const camMain = scoring && (segMode === 'test' || segMode === 'results')
+  // Side-by-side replay: reference on the left, your recorded take on the right.
+  const replaying = phase === 'go' && segMode === 'replay' && !!takeUrl
   const [toast, setToast] = useState<string | null>(null)
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([])
   const [activeCam, setActiveCam] = useState<string | null>(null)
@@ -520,6 +524,14 @@ export function Practice() {
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase])
+
+  // When the camera takes the stage (test/results), make sure the preview element is
+  // actually playing — it was display:none during watch, and some browsers park hidden
+  // videos. Belt-and-suspenders so the dancer ALWAYS sees themselves during a take.
+  useEffect(() => {
+    if (camMain) void webcamVideoRef.current?.play().catch(() => { /* not ready yet */ })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [camMain])
 
   // Tidy up the take recording on unmount (stop the recorder, free the blob URL).
   useEffect(() => () => {
@@ -1063,10 +1075,6 @@ export function Practice() {
   }
 
   const inGo = phase === 'go'
-  // The camera owns the stage during the test and sits behind the results panel.
-  const camMain = inGo && scoring && (segMode === 'test' || segMode === 'results')
-  // Side-by-side replay: reference on the left, your recorded take on the right.
-  const replaying = inGo && segMode === 'replay' && !!takeUrl
 
   // ---------- PRACTICE ----------
   return (
