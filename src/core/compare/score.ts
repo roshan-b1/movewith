@@ -110,3 +110,51 @@ export function scoreSectionDetailed(
   }
   return { ...overall, phases }
 }
+
+// ---- Run summary: grading a whole run-through, segment by segment ----------------------
+
+/** How a segment landed. Drives the "which sections were perfect, which were close" recap. */
+export type SegmentGrade = 'nailed' | 'close' | 'off'
+
+/** Thresholds for the three buckets (0..100). Kept here so UI and summary agree. */
+export const GRADE_NAILED = 85
+export const GRADE_CLOSE = 65
+
+export function gradeScore(score: number): SegmentGrade {
+  if (score >= GRADE_NAILED) return 'nailed'
+  if (score >= GRADE_CLOSE) return 'close'
+  return 'off'
+}
+
+export interface RatedSegment {
+  /** Segment index (0-based) as shown to the dancer (+1). */
+  index: number
+  score: number
+  worstLimb: Limb | null
+  grade: SegmentGrade
+}
+
+export interface RunSummary {
+  segments: RatedSegment[]
+  /** Average score across the rated segments (0..100). */
+  overall: number
+  nailed: number
+  close: number
+  off: number
+}
+
+/**
+ * Roll up a full run-through (each segment scored on its own) into an overall grade plus
+ * the per-segment buckets. Empty input → a zeroed summary (nothing was rated).
+ */
+export function summarizeRun(items: { index: number; score: number; worstLimb: Limb | null }[]): RunSummary {
+  const segments: RatedSegment[] = items.map((it) => ({ ...it, grade: gradeScore(it.score) }))
+  const overall = segments.length ? segments.reduce((s, x) => s + x.score, 0) / segments.length : 0
+  return {
+    segments,
+    overall,
+    nailed: segments.filter((s) => s.grade === 'nailed').length,
+    close: segments.filter((s) => s.grade === 'close').length,
+    off: segments.filter((s) => s.grade === 'off').length,
+  }
+}

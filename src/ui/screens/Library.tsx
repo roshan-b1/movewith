@@ -12,8 +12,7 @@ export function Library() {
   const error = useSession((s) => s.error)
   const clearError = useSession((s) => s.clearError)
 
-  const learnInput = useRef<HTMLInputElement>(null)
-  const playInput = useRef<HTMLInputElement>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -28,70 +27,49 @@ export function Library() {
     setRenaming(null)
   }
 
-  function importFile(file: File | undefined, playbackOnly: boolean) {
+  // One upload path. It always analyzes the moves (so both practice and "Test my skills"
+  // work) — the camera choice happens later, per session, not here.
+  function importFile(file: File | undefined) {
     if (!file) return
     const name = file.name.replace(/\.[^.]+$/, '')
-    void importVideo(file, name || 'My dance', playbackOnly)
+    void importVideo(file, name || 'My dance', false)
   }
 
   return (
     <div className="mx-auto max-w-5xl px-5 py-12 sm:px-8 sm:py-16">
       {/* Hero */}
-      <header className="mb-10 animate-fade-up">
-        <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-line bg-ink/[0.04] px-3 py-1 text-xs font-medium text-ink/60">
-          <span className="h-1.5 w-1.5 rounded-full bg-good" />
-          Nothing to install · nothing uploaded · runs in your browser
-        </div>
+      <header className="mb-8 animate-fade-up">
         <h1 className="font-display text-5xl font-bold leading-[0.95] tracking-tightish sm:text-7xl">
           Learn any dance,
           <br />
           <span className="text-gradient italic">move by move.</span>
         </h1>
         <p className="mt-5 max-w-xl text-lg leading-relaxed text-ink/60">
-          Give it any dance tutorial from your camera roll. It cuts the video into short segments,
-          you learn them one at a time, and your webcam checks whether you actually got each one
-          right before you move on.
+          Upload a tutorial. It splits into short segments you learn one at a time, then test
+          your skills on camera when you are ready. Everything runs on your device.
         </p>
       </header>
 
-      {/* Two clear actions */}
-      <div className="mb-10 grid gap-4 sm:grid-cols-3">
-        <label
-          onDragOver={(e) => {
-            e.preventDefault()
-            setDragOver(true)
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => {
-            e.preventDefault()
-            setDragOver(false)
-            importFile(e.dataTransfer.files?.[0], false)
-          }}
-          className={[
-            'group flex cursor-pointer flex-col items-center justify-center rounded-2.5xl border-2 border-dashed p-8 text-center transition-all duration-200 sm:col-span-2',
-            dragOver ? 'scale-[1.01] border-brand bg-brand/10 shadow-glow' : 'border-ink/20 bg-ink/[0.02] hover:border-ink/35 hover:bg-ink/[0.04]',
-          ].join(' ')}
-        >
-          <input ref={learnInput} type="file" accept="video/*" className="hidden" onChange={(e) => importFile(e.target.files?.[0], false)} />
-          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand text-2xl text-cream shadow-glow transition-transform duration-200 group-hover:-translate-y-0.5">
-            ↑
-          </div>
-          <p className="font-display text-lg font-semibold">Learn a dance, coached</p>
-          <p className="mt-1 text-sm text-ink/50">
-            Upload a tutorial. It learns the moves, then your camera checks you and scores each one.
-          </p>
-        </label>
-
-        <button
-          onClick={() => playInput.current?.click()}
-          className="flex flex-col items-center justify-center rounded-2.5xl border border-line bg-panel/70 p-8 text-center shadow-soft transition hover:border-ink/25"
-        >
-          <input ref={playInput} type="file" accept="video/*" className="hidden" onChange={(e) => importFile(e.target.files?.[0], true)} />
-          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand2/20 text-2xl">▶</div>
-          <p className="font-display text-base font-semibold">Practice along</p>
-          <p className="mt-1 text-xs text-ink/50">Dance along to any video: slow-mo, loop the hard parts, mirror it. No camera.</p>
-        </button>
-      </div>
+      {/* Upload — one clear action */}
+      <label
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => { e.preventDefault(); setDragOver(false); importFile(e.dataTransfer.files?.[0]) }}
+        className={[
+          'group mb-10 flex cursor-pointer flex-col items-center justify-center rounded-2.5xl border-2 border-dashed p-8 text-center transition-all duration-200',
+          dragOver ? 'scale-[1.01] border-brand bg-brand/10 shadow-glow' : 'border-ink/20 bg-ink/[0.02] hover:border-ink/35 hover:bg-ink/[0.04]',
+        ].join(' ')}
+      >
+        <input ref={fileInput} type="file" accept="video/*" className="hidden" onChange={(e) => importFile(e.target.files?.[0])} />
+        <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand text-2xl text-cream shadow-glow transition-transform duration-200 group-hover:-translate-y-0.5">
+          ↑
+        </div>
+        <p className="font-display text-lg font-semibold">Upload a tutorial</p>
+        <p className="mt-1 max-w-md text-sm text-ink/50">
+          Drop in any dance video, or click to pick one. It learns the moves so you can drill them
+          and get scored later.
+        </p>
+      </label>
 
       {/* How it works — the actual flow, in order, so a first-timer knows what they're in for */}
       <section className="mb-10">
@@ -110,13 +88,13 @@ export function Library() {
             },
             {
               n: '3',
-              t: 'Watch, then try it',
-              d: 'Loop a segment until it clicks. Slow it to half speed, mirror it so left stays left, then hit "Got it" to dance it yourself.',
+              t: 'Learn it, watching yourself',
+              d: 'Loop a segment, slow it to half speed, mirror it. Turn the camera on to dance beside yourself and watch each take play back before you move on.',
             },
             {
               n: '4',
-              t: 'See where you were off',
-              d: 'Your webcam tracks your body and scores the segment, calls out which limb drifted, and replays your take next to the instructor.',
+              t: 'Test your skills',
+              d: 'When you are ready, run the whole dance or one segment on camera. It scores each part and tells you which you nailed and which need work.',
             },
           ].map((s) => (
             <li key={s.n} className="rounded-2.5xl border border-line bg-panel/60 p-4">
@@ -236,16 +214,27 @@ export function Library() {
                 </div>
               ) : (
                 <>
-                  <button onClick={() => void openTrack(t.id)} className="rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-cream shadow-soft transition hover:brightness-105 active:scale-95">
-                    Open →
-                  </button>
+                  <div className="flex flex-1 flex-wrap items-center gap-2">
+                    <button onClick={() => void openTrack(t.id, 'practice')} className="rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-cream shadow-soft transition hover:brightness-105 active:scale-95">
+                      ▶ Practice
+                    </button>
+                    {t.frames.length > 0 && (
+                      <button
+                        onClick={() => void openTrack(t.id, 'rate')}
+                        className="rounded-xl border border-brand2/50 bg-brand2/15 px-3 py-2 text-sm font-semibold text-ink transition hover:bg-brand2/25 active:scale-95"
+                        title="Turn the camera on and get scored"
+                      >
+                        🎯 Test my skills
+                      </button>
+                    )}
+                  </div>
                   {t.source.type !== 'bundled' && (
                     <button
                       onClick={() => setConfirmDelete(t.id)}
-                      className="rounded-xl border border-line px-3 py-2 text-xs font-medium text-ink/45 transition hover:border-bad/50 hover:text-bad"
+                      className="shrink-0 rounded-xl border border-line px-2.5 py-2 text-xs font-medium text-ink/45 transition hover:border-bad/50 hover:text-bad"
                       title="Delete this practice"
                     >
-                      🗑 Delete
+                      🗑
                     </button>
                   )}
                 </>

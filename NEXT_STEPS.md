@@ -30,9 +30,12 @@ deliberate "do later" so the current app stays focused.
 
 ## Visual / onboarding
 
-- ✅ **Just-Dance-style rigged dancer — DONE** (and upgraded to full 3D). A matte-black
-  MALE silhouette mannequin (Mixamo Y Bot) rendered with three.js on a rim-lit stage with
-  real shadows, driven per-frame from any routine's stored landmarks
+- **Just-Dance-style rigged dancer — BUILT, currently HIDDEN.** The implementation exists but
+  is switched off (`ENABLE_3D_AVATAR = false` in Practice.tsx) because it isn't presentable
+  enough to show yet; the code, the .glb, and the solver all stay so it can be flipped back on
+  once it's improved. A matte-black MALE silhouette mannequin (Mixamo Y Bot) rendered with
+  three.js on a rim-lit stage with real shadows, driven per-frame from any routine's stored
+  landmarks
   (`src/ui/avatar/InstructorAvatar.ts`). The solver is fully CUSTOM and direction-exact
   (Kalidokit was removed — it clamps folds behind the body and hip yaw, so behind-the-head
   moves and full turns came out wrong): every limb bone aligns to its landmark bone vector

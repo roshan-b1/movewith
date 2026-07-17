@@ -27,6 +27,8 @@ import {
 } from '../storage/db'
 
 export type Screen = 'library' | 'practice'
+/** Why the practice screen was opened: to learn/drill, or to be scored by the rater. */
+export type OpenIntent = 'practice' | 'rate'
 
 export interface SessionState {
   screen: Screen
@@ -34,12 +36,14 @@ export interface SessionState {
   activeTrack: ReferenceTrack | null
   activeVideoUrl: string | null
   progress: DanceProgress | null
+  /** What the practice screen should open into (drilling vs "Test my skills"). */
+  openIntent: OpenIntent
   status: 'idle' | 'loading' | 'extracting' | 'error'
   extract: ExtractProgress | null
   error: string | null
 
   init: () => Promise<void>
-  openTrack: (id: string) => Promise<void>
+  openTrack: (id: string, intent?: OpenIntent) => Promise<void>
   importVideo: (file: File, name: string, playbackOnly?: boolean) => Promise<void>
   renameTrack: (id: string, name: string) => Promise<void>
   removeTrack: (id: string) => Promise<void>
@@ -58,6 +62,7 @@ export const useSession = create<SessionState>((set, get) => ({
   activeTrack: null,
   activeVideoUrl: null,
   progress: null,
+  openIntent: 'practice',
   status: 'idle',
   extract: null,
   error: null,
@@ -81,7 +86,7 @@ export const useSession = create<SessionState>((set, get) => ({
     }
   },
 
-  async openTrack(id) {
+  async openTrack(id, intent = 'practice') {
     set({ status: 'loading', error: null })
     try {
       const track = await getTrack(id)
@@ -95,7 +100,7 @@ export const useSession = create<SessionState>((set, get) => ({
       // Revoke any previous object URL.
       const prev = get().activeVideoUrl
       if (prev) URL.revokeObjectURL(prev)
-      set({ activeTrack: track, activeVideoUrl: url, progress, screen: 'practice', status: 'idle' })
+      set({ activeTrack: track, activeVideoUrl: url, progress, openIntent: intent, screen: 'practice', status: 'idle' })
     } catch (e) {
       set({ status: 'error', error: errMsg(e) })
     }

@@ -54,6 +54,8 @@ export interface PracticeSetup {
   reps?: number
   breakSecs?: number
   cameraOn?: boolean
+  /** Show yourself (camera) while practicing and replay your take after each segment. */
+  selfView?: boolean
   /** Segment indices skipped in practice (e.g. the instructor's explanation parts). */
   skip?: number[]
 }

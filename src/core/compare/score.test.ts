@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { scoreSection, scoreSectionDetailed } from './score'
+import { scoreSection, scoreSectionDetailed, gradeScore, summarizeRun } from './score'
 import { STRICT } from './similarity'
 
 // 10 joint angles per frame (the app's angle vector length).
@@ -29,5 +29,39 @@ describe('scoreSectionDetailed', () => {
   it('returns no phases for takes too short to slice', () => {
     const ref = Array.from({ length: 4 }, () => frame(10))
     expect(scoreSectionDetailed(ref, ref, STRICT).phases).toHaveLength(0)
+  })
+})
+
+describe('gradeScore', () => {
+  it('buckets by the nailed/close thresholds', () => {
+    expect(gradeScore(100)).toBe('nailed')
+    expect(gradeScore(85)).toBe('nailed') // boundary is inclusive
+    expect(gradeScore(84.9)).toBe('close')
+    expect(gradeScore(65)).toBe('close')
+    expect(gradeScore(64.9)).toBe('off')
+    expect(gradeScore(0)).toBe('off')
+  })
+})
+
+describe('summarizeRun', () => {
+  it('averages the run and tallies each bucket', () => {
+    const s = summarizeRun([
+      { index: 0, score: 92, worstLimb: null },
+      { index: 1, score: 70, worstLimb: 'leftArm' },
+      { index: 2, score: 40, worstLimb: 'rightLeg' },
+    ])
+    expect(s.overall).toBeCloseTo((92 + 70 + 40) / 3, 5)
+    expect(s.nailed).toBe(1)
+    expect(s.close).toBe(1)
+    expect(s.off).toBe(1)
+    expect(s.segments.map((x) => x.grade)).toEqual(['nailed', 'close', 'off'])
+    expect(s.segments[1]!.worstLimb).toBe('leftArm') // carries through for the tip
+  })
+
+  it('zeroes out an empty run instead of dividing by zero', () => {
+    const s = summarizeRun([])
+    expect(s.overall).toBe(0)
+    expect(s.segments).toHaveLength(0)
+    expect([s.nailed, s.close, s.off]).toEqual([0, 0, 0])
   })
 })
