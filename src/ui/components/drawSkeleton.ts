@@ -47,6 +47,23 @@ export function containProjector(videoW: number, videoH: number): Projector {
   }
 }
 
+/** Projects image-space landmarks (0..1) onto a canvas overlaying an `object-cover`
+ *  video. Cover SCALES UP to fill the box and crops the overflow, so the landmarks have
+ *  to be scaled and offset the same way (the offsets go negative — that's the cropped
+ *  part). Without this the skeleton is stretched across the full canvas while the video
+ *  underneath is cropped, and the lines drift off the dancer's body. */
+export function coverProjector(videoW: number, videoH: number): Projector {
+  return (lm, w, h) => {
+    if (!videoW || !videoH) return { x: lm.x * w, y: lm.y * h }
+    const scale = Math.max(w / videoW, h / videoH)
+    const dispW = videoW * scale
+    const dispH = videoH * scale
+    const offX = (w - dispW) / 2
+    const offY = (h - dispH) / 2
+    return { x: offX + lm.x * dispW, y: offY + lm.y * dispH }
+  }
+}
+
 /** Default projection for image-normalised landmarks (0..1 -> pixels). */
 export const imageProjector: Projector = (lm, w, h) => ({ x: lm.x * w, y: lm.y * h })
 

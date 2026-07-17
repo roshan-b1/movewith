@@ -6,6 +6,11 @@ import { create } from 'zustand'
 import type { ReferenceTrack, DanceProgress } from '../core/reference/types'
 import { generateDemoDance, DEMO_TRACK_ID, OLD_DEMO_TRACK_IDS } from '../core/demo/demoDance'
 
+// The generated demo routine rides on the 3D dancer, which isn't presentable yet, so the
+// library shows only real uploads for now. The generator stays intact (see generateDemoDance
+// below) — flip this to true to seed it again.
+const ENABLE_DEMO_TRACK = false
+
 // Bundled routines that no longer exist — cleaned out of returning users' libraries.
 const REMOVED_TRACK_IDS = ['macarena-v1']
 import { extractReferenceFromVideo, type ExtractProgress } from '../engine/extractReference'
@@ -36,6 +41,7 @@ export interface SessionState {
   init: () => Promise<void>
   openTrack: (id: string) => Promise<void>
   importVideo: (file: File, name: string, playbackOnly?: boolean) => Promise<void>
+  renameTrack: (id: string, name: string) => Promise<void>
   removeTrack: (id: string) => Promise<void>
   updateProgress: (next: DanceProgress) => Promise<void>
   back: () => void
@@ -59,12 +65,14 @@ export const useSession = create<SessionState>((set, get) => ({
   async init() {
     set({ status: 'loading', error: null })
     try {
-      // Ensure the bundled demo exists so the app is usable on first open. Older
-      // generator versions and removed bundled routines are cleaned up.
-      for (const old of [...OLD_DEMO_TRACK_IDS, ...REMOVED_TRACK_IDS]) {
+      // Clean out old generator versions and removed bundled routines. While the demo is
+      // disabled its track goes too, so returning users don't keep a stale copy.
+      const stale = [...OLD_DEMO_TRACK_IDS, ...REMOVED_TRACK_IDS]
+      if (!ENABLE_DEMO_TRACK) stale.push(DEMO_TRACK_ID)
+      for (const old of stale) {
         if (await getTrack(old)) await deleteTrack(old)
       }
-      if (!(await getTrack(DEMO_TRACK_ID))) {
+      if (ENABLE_DEMO_TRACK && !(await getTrack(DEMO_TRACK_ID))) {
         await saveTrack(generateDemoDance(Date.now()))
       }
       set({ tracks: await listTracks(), status: 'idle' })
@@ -112,6 +120,20 @@ export const useSession = create<SessionState>((set, get) => ({
     } catch (e) {
       set({ status: 'error', error: errMsg(e), extract: null })
     }
+  },
+
+  async renameTrack(id, name) {
+    const clean = name.trim()
+    if (!clean) return
+    const track = await getTrack(id)
+    if (!track) return
+    const updated = { ...track, name: clean }
+    await saveTrack(updated)
+    const active = get().activeTrack
+    set({
+      tracks: await listTracks(),
+      activeTrack: active && active.id === id ? updated : active,
+    })
   },
 
   async removeTrack(id) {

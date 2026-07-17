@@ -5,6 +5,7 @@ export function Library() {
   const tracks = useSession((s) => s.tracks)
   const openTrack = useSession((s) => s.openTrack)
   const importVideo = useSession((s) => s.importVideo)
+  const renameTrack = useSession((s) => s.renameTrack)
   const removeTrack = useSession((s) => s.removeTrack)
   const status = useSession((s) => s.status)
   const extract = useSession((s) => s.extract)
@@ -15,6 +16,17 @@ export function Library() {
   const playInput = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [draftName, setDraftName] = useState('')
+
+  function startRename(id: string, current: string) {
+    setRenaming(id)
+    setDraftName(current)
+  }
+  function commitRename(id: string) {
+    void renameTrack(id, draftName)
+    setRenaming(null)
+  }
 
   function importFile(file: File | undefined, playbackOnly: boolean) {
     if (!file) return
@@ -28,7 +40,7 @@ export function Library() {
       <header className="mb-10 animate-fade-up">
         <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-line bg-ink/[0.04] px-3 py-1 text-xs font-medium text-ink/60">
           <span className="h-1.5 w-1.5 rounded-full bg-good" />
-          Your smart dance helper · runs in your browser
+          Nothing to install · nothing uploaded · runs in your browser
         </div>
         <h1 className="font-display text-5xl font-bold leading-[0.95] tracking-tightish sm:text-7xl">
           Learn any dance,
@@ -36,8 +48,9 @@ export function Library() {
           <span className="text-gradient italic">move by move.</span>
         </h1>
         <p className="mt-5 max-w-xl text-lg leading-relaxed text-ink/60">
-          Drop in a tutorial and learn it bit by bit. Slow it down, loop the tricky parts, and dance
-          along. Turn the camera on when you want it to check your moves.
+          Give it any dance tutorial from your camera roll. It cuts the video into short segments,
+          you learn them one at a time, and your webcam checks whether you actually got each one
+          right before you move on.
         </p>
       </header>
 
@@ -80,12 +93,48 @@ export function Library() {
         </button>
       </div>
 
-      {/* What you can do */}
-      <div className="mb-10 flex flex-wrap items-center justify-center gap-2 text-xs text-ink/55">
-        {['Slow-mo', 'Loop any part', 'Mirror', 'Move-by-move breakdown', 'Trim to the section you want', 'Voice control', 'Live scoring'].map((f) => (
-          <span key={f} className="rounded-full border border-line bg-ink/[0.04] px-3 py-1">{f}</span>
-        ))}
-      </div>
+      {/* How it works — the actual flow, in order, so a first-timer knows what they're in for */}
+      <section className="mb-10">
+        <h2 className="mb-4 font-display text-sm font-medium uppercase tracking-[0.18em] text-ink/45">How it works</h2>
+        <ol className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            {
+              n: '1',
+              t: 'Add a tutorial',
+              d: 'Pick any dance video off your phone or laptop. Nothing gets uploaded to a server: the file stays on your device.',
+            },
+            {
+              n: '2',
+              t: 'Cut it into segments',
+              d: 'Trim off the intro, then tap along to mark where each move starts and ends. Short segments beat one long routine.',
+            },
+            {
+              n: '3',
+              t: 'Watch, then try it',
+              d: 'Loop a segment until it clicks. Slow it to half speed, mirror it so left stays left, then hit "Got it" to dance it yourself.',
+            },
+            {
+              n: '4',
+              t: 'See where you were off',
+              d: 'Your webcam tracks your body and scores the segment, calls out which limb drifted, and replays your take next to the instructor.',
+            },
+          ].map((s) => (
+            <li key={s.n} className="rounded-2.5xl border border-line bg-panel/60 p-4">
+              <span className="mb-2 flex h-7 w-7 items-center justify-center rounded-full bg-brand text-xs font-bold text-cream">
+                {s.n}
+              </span>
+              <p className="font-display text-sm font-semibold">{s.t}</p>
+              <p className="mt-1 text-xs leading-relaxed text-ink/50">{s.d}</p>
+            </li>
+          ))}
+        </ol>
+        <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-ink/45">
+          <span className="text-ink/35">Also built in:</span>
+          {['Half speed with the pitch kept', 'Mirror mode', 'Loop any segment', 'Skip the talking parts', 'Voice control', 'Your progress saves'].map((f) => (
+            <span key={f} className="rounded-full border border-line bg-ink/[0.04] px-3 py-1">{f}</span>
+          ))}
+        </div>
+      </section>
 
       {/* Extraction progress */}
       {status === 'extracting' && extract && (
@@ -112,6 +161,15 @@ export function Library() {
         <h2 className="font-display text-sm font-medium uppercase tracking-[0.18em] text-ink/45">Your dances</h2>
         <span className="text-xs text-ink/35">{tracks.length} saved</span>
       </div>
+      {tracks.length === 0 && status !== 'extracting' && (
+        <div className="rounded-2.5xl border border-dashed border-ink/15 bg-ink/[0.02] p-10 text-center">
+          <p className="font-display text-base font-semibold text-ink/70">No dances yet</p>
+          <p className="mx-auto mt-1 max-w-sm text-sm text-ink/45">
+            Add a tutorial above and it shows up here, with your segments and progress saved for
+            next time.
+          </p>
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
         {tracks.map((t, i) => (
           <div
@@ -130,11 +188,36 @@ export function Library() {
                   </span>
                 )}
               </div>
-              <h3 className="px-1 font-display text-base font-semibold leading-snug">{t.name}</h3>
-              <p className="mt-1 px-1 text-xs text-ink/50">
-                {Math.round(t.tempo.bpm)} BPM · {Math.round(t.source.durationSec)}s
-              </p>
             </button>
+            {renaming === t.id ? (
+              <input
+                autoFocus
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                onBlur={() => commitRename(t.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitRename(t.id)
+                  if (e.key === 'Escape') setRenaming(null)
+                }}
+                className="mx-1 w-[calc(100%-0.5rem)] rounded-lg border border-brand bg-ink/[0.06] px-2 py-1 font-display text-base font-semibold text-ink outline-none"
+              />
+            ) : (
+              <div className="flex items-start justify-between gap-1">
+                <button onClick={() => void openTrack(t.id)} className="min-w-0 flex-1 px-1 text-left font-display text-base font-semibold leading-snug">
+                  {t.name}
+                </button>
+                <button
+                  onClick={() => startRename(t.id, t.name)}
+                  title="Rename"
+                  className="shrink-0 rounded-lg px-1.5 py-0.5 text-sm text-ink/30 opacity-0 transition hover:text-ink group-hover:opacity-100"
+                >
+                  ✏
+                </button>
+              </div>
+            )}
+            <p className="mt-1 px-1 text-xs text-ink/50">
+              {Math.round(t.tempo.bpm)} BPM · {Math.round(t.source.durationSec)}s
+            </p>
             <div className="mt-4 flex items-center justify-between gap-2 px-1 pb-1">
               {confirmDelete === t.id ? (
                 <div className="flex w-full items-center justify-between gap-2">

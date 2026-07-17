@@ -16,7 +16,7 @@ import {
 } from '../../core/reference/segment'
 import { VoiceController, type VoiceCommand } from '../../engine/voice'
 import { BeatMusic } from '../../engine/beatMusic'
-import { drawSkeleton, drawHumanFigure, worldProjector, containProjector } from '../components/drawSkeleton'
+import { drawSkeleton, drawHumanFigure, worldProjector, containProjector, coverProjector } from '../components/drawSkeleton'
 import { InstructorAvatar, type AvatarStatus } from '../avatar/InstructorAvatar'
 import { AccuracyMeter } from '../components/AccuracyMeter'
 import { Scrubber } from '../components/Scrubber'
@@ -25,6 +25,11 @@ import { SegmentBar } from '../components/SegmentBar'
 import type { ReferenceTrack } from '../../core/reference/types'
 
 const RATE_STEPS = [0.5, 0.75, 1]
+// The rigged 3D dancer isn't good enough to show anyone yet. The whole implementation
+// stays (InstructorAvatar, the .glb, the pose solver) — this just keeps it off screen
+// until it's ready. Flip to true to bring it back.
+const ENABLE_3D_AVATAR = false
+
 const LIMB_LABEL: Record<Limb, string> = {
   leftArm: 'Left arm', rightArm: 'Right arm', leftLeg: 'Left leg', rightLeg: 'Right leg', torso: 'Torso',
 }
@@ -99,6 +104,7 @@ export function Practice() {
   const videoUrl = useSession((s) => s.activeVideoUrl)
   const back = useSession((s) => s.back)
   const updateProgress = useSession((s) => s.updateProgress)
+  const renameTrack = useSession((s) => s.renameTrack)
 
   const duration = track.source.durationSec
   const playbackOnly = track.frames.length === 0
@@ -117,6 +123,8 @@ export function Practice() {
   const [skip, setSkip] = useState<number[]>(savedSetup?.skip ?? [])
   const [countdown, setCountdown] = useState(0)
   const [countdownLabel, setCountdownLabel] = useState('Replaying in')
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [draftTitle, setDraftTitle] = useState('')
 
   // ---- runtime ----
   const [trimStart, setTrimStart] = useState(savedSetup?.trimStart ?? 0)
@@ -258,7 +266,7 @@ export function Practice() {
   // dancer is the instructor for content we author, never a replacement for the video.
   // If the model ever fails to load we quietly fall back to the classic 2D drawing.
   const hasFrames = track.frames.length > 0
-  const showAvatar = hasFrames && avatarStatus !== 'error' && !videoUrl && phase !== 'setup'
+  const showAvatar = ENABLE_3D_AVATAR && hasFrames && avatarStatus !== 'error' && !videoUrl && phase !== 'setup'
 
   // 3D dancer lifecycle: create it when its canvas is on screen, tear down when hidden.
   useEffect(() => {
@@ -474,7 +482,15 @@ export function Practice() {
           const canvas = webcamCanvasRef.current
           if (canvas) {
             const ctx = canvas.getContext('2d')
-            if (ctx) drawSkeleton(ctx, r.liveImage, { perLimb: r.frame?.perLimb, minVisibility: 0.3, lineWidth: Math.max(2, canvas.width * 0.012) })
+            // Project through the SAME object-cover geometry the <video> uses, or the
+            // lines sit off the body (they'd be stretched to the box while the video
+            // underneath is cropped).
+            if (ctx) drawSkeleton(ctx, r.liveImage, {
+              perLimb: r.frame?.perLimb,
+              project: coverProjector(webcam.videoWidth, webcam.videoHeight),
+              minVisibility: 0.3,
+              lineWidth: Math.max(2, canvas.width * 0.008),
+            })
           }
           const now = performance.now()
           if (now - meterThrottleRef.current > 250) { meterThrottleRef.current = now; setMeter(r.rollingScore) }
@@ -525,13 +541,13 @@ export function Practice() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase])
 
-  // When the camera takes the stage (test/results), make sure the preview element is
-  // actually playing — it was display:none during watch, and some browsers park hidden
-  // videos. Belt-and-suspenders so the dancer ALWAYS sees themselves during a take.
+  // Keep the preview element actually playing whenever it's on screen (corner self-view
+  // or fullscreen test). Some browsers park a video that was display:none, so nudge it
+  // on every visibility change — the dancer must ALWAYS see themselves.
   useEffect(() => {
-    if (camMain) void webcamVideoRef.current?.play().catch(() => { /* not ready yet */ })
+    if (camMain || !replaying) void webcamVideoRef.current?.play().catch(() => { /* not ready yet */ })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [camMain])
+  }, [camMain, replaying, camStatus])
 
   // Tidy up the take recording on unmount (stop the recorder, free the blob URL).
   useEffect(() => () => {
@@ -1010,7 +1026,28 @@ export function Practice() {
       <div className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-6 p-5 sm:p-8">
         <button onClick={back} className={btn + ' !py-2 absolute left-5 top-5'}>← Library</button>
         <div className="text-center">
-          <h1 className="font-display text-3xl font-bold tracking-tightish">{track.name}</h1>
+          {editingTitle ? (
+            <input
+              autoFocus
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              onBlur={() => { void renameTrack(track.id, draftTitle); setEditingTitle(false) }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { void renameTrack(track.id, draftTitle); setEditingTitle(false) }
+                if (e.key === 'Escape') setEditingTitle(false)
+              }}
+              className="mx-auto block w-full max-w-md rounded-xl border border-brand bg-ink/[0.06] px-3 py-1.5 text-center font-display text-3xl font-bold tracking-tightish text-ink outline-none"
+            />
+          ) : (
+            <button
+              onClick={() => { setDraftTitle(track.name); setEditingTitle(true) }}
+              title="Tap to rename"
+              className="group inline-flex items-center gap-2 font-display text-3xl font-bold tracking-tightish"
+            >
+              {track.name}
+              <span className="text-base text-ink/25 transition group-hover:text-ink/60">✏</span>
+            </button>
+          )}
           <p className="mt-1 text-sm text-ink/50">{Math.round(track.tempo.bpm)} BPM · set it up, then dance</p>
         </div>
 
@@ -1177,14 +1214,29 @@ export function Practice() {
             </div>
           )}
         </div>
-        {/* YOUR CAMERA — hidden while watching (the video is the whole show), fullscreen
-            during the test and behind the results. Stays mounted so the stream is warm. */}
+        {/* YOUR CAMERA — fullscreen during the test/results, and a small self-view in the
+            corner while you're watching along, so you can always see yourself with the
+            tracking lines on you. Hidden only during side-by-side replay (your take is
+            already on screen there). Stays mounted so the stream stays warm. */}
         {cameraOn && (
-          <div className={camMain ? 'absolute inset-0 z-10 bg-black' : 'absolute inset-0 z-10 hidden'}>
+          <div
+            className={
+              camMain
+                ? 'absolute inset-0 z-10 bg-black'
+                : replaying
+                  ? 'hidden'
+                  : 'absolute bottom-3 right-3 z-10 h-36 w-28 overflow-hidden rounded-2xl border border-line bg-black shadow-soft sm:h-44 sm:w-36'
+            }
+          >
             <div className="mirror absolute inset-0">
               <video ref={webcamVideoRef} className="h-full w-full object-cover" playsInline muted />
               <canvas ref={webcamCanvasRef} className="absolute inset-0 h-full w-full" />
             </div>
+            {!camMain && camStatus === 'ready' && (
+              <span className="absolute bottom-1 left-1 z-20 rounded-lg bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-cream/85 backdrop-blur">
+                You
+              </span>
+            )}
             {camStatus !== 'ready' && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/70 p-2 text-center">
                 {camStatus === 'init'
