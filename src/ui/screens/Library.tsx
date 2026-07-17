@@ -17,6 +17,10 @@ export function Library() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [draftName, setDraftName] = useState('')
+  const [pickRate, setPickRate] = useState(false)
+
+  // Only dances that were analyzed (have pose frames) can be scored.
+  const scorable = tracks.filter((t) => t.frames.length > 0)
 
   function startRename(id: string, current: string) {
     setRenaming(id)
@@ -50,26 +54,37 @@ export function Library() {
         </p>
       </header>
 
-      {/* Upload — one clear action */}
-      <label
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => { e.preventDefault(); setDragOver(false); importFile(e.dataTransfer.files?.[0]) }}
-        className={[
-          'group mb-10 flex cursor-pointer flex-col items-center justify-center rounded-2.5xl border-2 border-dashed p-8 text-center transition-all duration-200',
-          dragOver ? 'scale-[1.01] border-brand bg-brand/10 shadow-glow' : 'border-ink/20 bg-ink/[0.02] hover:border-ink/35 hover:bg-ink/[0.04]',
-        ].join(' ')}
-      >
-        <input ref={fileInput} type="file" accept="video/*" className="hidden" onChange={(e) => importFile(e.target.files?.[0])} />
-        <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand text-2xl text-cream shadow-glow transition-transform duration-200 group-hover:-translate-y-0.5">
-          ↑
-        </div>
-        <p className="font-display text-lg font-semibold">Upload a tutorial</p>
-        <p className="mt-1 max-w-md text-sm text-ink/50">
-          Drop in any dance video, or click to pick one. It learns the moves so you can drill them
-          and get scored later.
-        </p>
-      </label>
+      {/* Two top-level actions: upload a tutorial, or test your skills on any dance you have */}
+      <div className="mb-10 grid gap-4 sm:grid-cols-3">
+        <label
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); importFile(e.dataTransfer.files?.[0]) }}
+          className={[
+            'group flex cursor-pointer flex-col items-center justify-center rounded-2.5xl border-2 border-dashed p-8 text-center transition-all duration-200 sm:col-span-2',
+            dragOver ? 'scale-[1.01] border-brand bg-brand/10 shadow-glow' : 'border-ink/20 bg-ink/[0.02] hover:border-ink/35 hover:bg-ink/[0.04]',
+          ].join(' ')}
+        >
+          <input ref={fileInput} type="file" accept="video/*" className="hidden" onChange={(e) => importFile(e.target.files?.[0])} />
+          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand text-2xl text-cream shadow-glow transition-transform duration-200 group-hover:-translate-y-0.5">
+            ↑
+          </div>
+          <p className="font-display text-lg font-semibold">Upload a tutorial</p>
+          <p className="mt-1 max-w-md text-sm text-ink/50">
+            Drop in any dance video, or click to pick one. It learns the moves so you can drill them
+            and get scored later.
+          </p>
+        </label>
+
+        <button
+          onClick={() => setPickRate(true)}
+          className="group flex flex-col items-center justify-center rounded-2.5xl border border-brand2/40 bg-brand2/[0.08] p-8 text-center shadow-soft transition hover:border-brand2/70 hover:bg-brand2/[0.14]"
+        >
+          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand2/25 text-2xl transition-transform duration-200 group-hover:-translate-y-0.5">🎯</div>
+          <p className="font-display text-base font-semibold">Test my skills</p>
+          <p className="mt-1 text-xs text-ink/55">Dance any of your tutorials on camera and get scored, part by part.</p>
+        </button>
+      </div>
 
       {/* How it works — the actual flow, in order, so a first-timer knows what they're in for */}
       <section className="mb-10">
@@ -142,9 +157,11 @@ export function Library() {
       {tracks.length === 0 && status !== 'extracting' && (
         <div className="rounded-2.5xl border border-dashed border-ink/15 bg-ink/[0.02] p-10 text-center">
           <p className="font-display text-base font-semibold text-ink/70">No dances yet</p>
-          <p className="mx-auto mt-1 max-w-sm text-sm text-ink/45">
-            Add a tutorial above and it shows up here, with your segments and progress saved for
-            next time.
+          <p className="mx-auto mt-1 max-w-md text-sm text-ink/45">
+            Upload a tutorial above and it shows up here to
+            <span className="font-semibold text-ink/70"> ▶ Practice</span>. Scoring lives in
+            <span className="font-semibold text-ink/70"> 🎯 Test my skills</span> at the top, which
+            works on any dance you have uploaded.
           </p>
         </div>
       )}
@@ -214,20 +231,9 @@ export function Library() {
                 </div>
               ) : (
                 <>
-                  <div className="flex flex-1 flex-wrap items-center gap-2">
-                    <button onClick={() => void openTrack(t.id, 'practice')} className="rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-cream shadow-soft transition hover:brightness-105 active:scale-95">
-                      ▶ Practice
-                    </button>
-                    {t.frames.length > 0 && (
-                      <button
-                        onClick={() => void openTrack(t.id, 'rate')}
-                        className="rounded-xl border border-brand2/50 bg-brand2/15 px-3 py-2 text-sm font-semibold text-ink transition hover:bg-brand2/25 active:scale-95"
-                        title="Turn the camera on and get scored"
-                      >
-                        🎯 Test my skills
-                      </button>
-                    )}
-                  </div>
+                  <button onClick={() => void openTrack(t.id, 'practice')} className="rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-cream shadow-soft transition hover:brightness-105 active:scale-95">
+                    ▶ Practice
+                  </button>
                   {t.source.type !== 'bundled' && (
                     <button
                       onClick={() => setConfirmDelete(t.id)}
@@ -245,6 +251,59 @@ export function Library() {
       </div>
 
       <footer className="mt-14 text-center text-xs text-ink/30">Your camera never leaves your device. Everything runs locally.</footer>
+
+      {/* Test my skills — pick which dance to be scored on (or upload one if there are none) */}
+      {pickRate && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          onClick={() => setPickRate(false)}
+        >
+          <div className="w-full max-w-md rounded-2.5xl border border-line bg-panel p-5 shadow-soft" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <p className="font-display text-lg font-bold">🎯 Test my skills</p>
+              <button onClick={() => setPickRate(false)} className="text-sm text-ink/50 transition hover:text-ink">✕</button>
+            </div>
+            {scorable.length > 0 ? (
+              <>
+                <p className="mt-1 text-sm text-ink/55">Which dance do you want to be scored on?</p>
+                <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {scorable.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => { setPickRate(false); void openTrack(t.id, 'rate') }}
+                      className="flex w-full items-center justify-between gap-3 rounded-xl border border-line bg-ink/[0.03] px-4 py-3 text-left transition hover:border-brand2/60 hover:bg-brand2/[0.08] active:scale-[0.99]"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate font-display text-sm font-semibold text-ink">{t.name}</span>
+                        <span className="block text-xs text-ink/45">{Math.round(t.tempo.bpm)} BPM · {Math.round(t.source.durationSec)}s</span>
+                      </span>
+                      <span className="shrink-0 text-brand2">→</span>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => { setPickRate(false); fileInput.current?.click() }}
+                  className="mt-3 w-full rounded-xl border border-dashed border-ink/25 px-4 py-2.5 text-sm font-medium text-ink/60 transition hover:border-ink/40 hover:text-ink"
+                >
+                  ↑ Upload a new dance
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="mt-1 text-sm text-ink/55">
+                  You need a dance first — the scoring runs against a tutorial you have uploaded.
+                </p>
+                <button
+                  onClick={() => { setPickRate(false); fileInput.current?.click() }}
+                  className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-brand px-4 py-3 text-sm font-bold text-cream shadow-glow transition hover:brightness-105 active:scale-95"
+                >
+                  ↑ Upload a dance
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
