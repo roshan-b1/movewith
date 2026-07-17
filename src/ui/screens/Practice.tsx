@@ -117,8 +117,10 @@ export function Practice() {
   const [moveSec, setMoveSec] = useState<number>(savedSetup?.moveSec ?? 8)
   const [reps, setReps] = useState<number>(savedSetup?.reps ?? Infinity)
   const [breakSecs, setBreakSecs] = useState<number>(savedSetup?.breakSecs ?? 3)
-  const [cameraOn, setCameraOn] = useState(savedSetup?.cameraOn ?? true)
-  const scoring = cameraOn && !playbackOnly && phase === 'go'
+  // "Rate my dance" is the ONLY place the camera turns on — practice itself stays
+  // camera-free (watch, slow-mo, loop, mirror). `rating` drives the camera + pose engine.
+  const [rating, setRating] = useState(false)
+  const scoring = rating && !playbackOnly
   const [completed, setCompleted] = useState<number[]>([])
   const [skip, setSkip] = useState<number[]>(savedSetup?.skip ?? [])
   const [countdown, setCountdown] = useState(0)
@@ -142,9 +144,10 @@ export function Practice() {
   const [camStatus, setCamStatus] = useState<'init' | 'ready' | 'error'>('init')
   const [camError, setCamError] = useState<string | null>(null)
   const [noBody, setNoBody] = useState(false)
-  // Per-segment flow: WATCH the video → "Got it" → TEST on camera with the music →
-  // RESULTS (score + feedback) → optional side-by-side REPLAY of your take → Proceed.
-  const [segMode, setSegMode] = useState<'watch' | 'test' | 'results' | 'replay'>('watch')
+  // Practice is just WATCH. "Rate my dance" adds its own sub-flow on top: MENU (pick the
+  // whole routine or one segment) → TEST on camera with the music → RESULTS (score + tips)
+  // → optional side-by-side REPLAY of your take.
+  const [segMode, setSegMode] = useState<'watch' | 'menu' | 'test' | 'results' | 'replay'>('watch')
   const [testResult, setTestResult] = useState<DetailedSectionScore | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
   /** Object URL of the camera recording captured during the last test. */
@@ -205,10 +208,11 @@ export function Practice() {
   const breakRef = useRef(breakSecs)
   const rateRef = useRef(rate)
   const scoringRef = useRef(scoring)
+  const ratingRef = useRef(false)
   const completedRef = useRef<number[]>([])
   const countdownTimerRef = useRef<number | null>(null)
   const voiceHandlerRef = useRef<(c: VoiceCommand) => void>(() => {})
-  const segModeRef = useRef<'watch' | 'test' | 'results' | 'replay'>('watch')
+  const segModeRef = useRef<'watch' | 'menu' | 'test' | 'results' | 'replay'>('watch')
   /** True while the camera-test take is being recorded (segment playing once through). */
   const testActiveRef = useRef(false)
   const finishTestRef = useRef<() => void>(() => {})
@@ -244,16 +248,17 @@ export function Practice() {
     const id = window.setTimeout(() => {
       const cur = useSession.getState().progress
       const base = cur ?? { trackId: track.id, bestSectionScores: {}, unlockedThrough: 0 }
-      void updateProgress({ ...base, setup: { trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, cameraOn, skip } })
+      void updateProgress({ ...base, setup: { trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, skip } })
     }, 500)
     return () => window.clearTimeout(id)
-  }, [trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, cameraOn, skip, track.id, updateProgress])
+  }, [trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, skip, track.id, updateProgress])
   useEffect(() => void (creatingRef.current = creating), [creating])
   useEffect(() => void (movesRef.current = moves), [moves])
   useEffect(() => void (moveIdxRef.current = moveIdx), [moveIdx])
   useEffect(() => void (repsRef.current = reps), [reps])
   useEffect(() => void (breakRef.current = breakSecs), [breakSecs])
   useEffect(() => void (scoringRef.current = scoring), [scoring])
+  useEffect(() => void (ratingRef.current = rating), [rating])
   useEffect(() => {
     rateRef.current = rate
     const cfg = rate < 1 ? LOOSE : STRICT
@@ -405,7 +410,7 @@ export function Practice() {
           const reachedLimit = repsRef.current !== Infinity && repCounterRef.current >= repsRef.current
           if (reachedLimit) {
             repCounterRef.current = 0
-            flashToast('Done · ✓ Got it to test yourself, or ↻ repeat')
+            flashToast('Done · ✓ Got it for the next one, or ↻ repeat')
           } else {
             // Wait the break, then resume from the loop start (already there — no re-seek,
             // which could otherwise interrupt play() and leave it stuck paused).
@@ -444,9 +449,10 @@ export function Practice() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Camera (+ engine when scoring), once started
+  // Camera + pose engine. Runs ONLY during "Rate my dance" (rating=true) — practice is
+  // camera-free, so nothing turns your webcam on until you choose to be rated.
   useEffect(() => {
-    if (!cameraOn || phase !== 'go') return
+    if (!rating || playbackOnly) return
     let cam: CameraHandle | null = null
     let disposed = false
     const getReference = (): ReferenceContext => {
@@ -500,7 +506,7 @@ export function Practice() {
         })
         lastBodyMsRef.current = performance.now()
         // Detection runs continuously (so the camera is warm and the live meter works the
-        // moment a test starts); takes are only RECORDED during a test (startTest).
+        // moment a rating starts); takes are only RECORDED during a rating (startRating).
         engine.start()
         setCamStatus('ready')
       } catch (e) {
@@ -515,7 +521,7 @@ export function Practice() {
       ;(camRef.current ?? cam)?.stop(); camRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [track.id, cameraOn, playbackOnly, phase])
+  }, [track.id, rating, playbackOnly])
 
   useEffect(() => {
     const cs = [instructorCanvasRef.current, instructorOverlayRef.current, webcamCanvasRef.current].filter(
@@ -526,7 +532,7 @@ export function Practice() {
     const ro = new ResizeObserver(() => cs.forEach(sizeCanvas))
     cs.forEach((c) => ro.observe(c))
     return () => ro.disconnect()
-  }, [videoUrl, cameraOn, camStatus, phase, segMode])
+  }, [videoUrl, rating, camStatus, phase, segMode])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -629,10 +635,27 @@ export function Practice() {
     setTestResult(null); setTestError(null)
   }
 
-  /** "Got it" → your turn: the camera takes over, the segment's music plays once, and the
-   *  engine records your take. Without a camera, Got it just completes the segment. */
-  function startTest() {
-    if (!scoringRef.current) { completeSegment(); return }
+  /** Enter "Rate my dance": turn the camera on and show the pick-what-to-rate menu. This is
+   *  the ONLY path that starts the webcam — practice never does. */
+  function enterRating() {
+    if (playbackOnly) return
+    clearCountdown()
+    playbackRef.current?.pause(); setPlaying(false)
+    setTestResult(null); setTestError(null); setTakeUrl(null)
+    setRating(true); ratingRef.current = true
+    setSegMode('menu'); segModeRef.current = 'menu'
+  }
+
+  /** Leave rating entirely: camera off, back to drilling the segment you were on. */
+  function exitRating() {
+    exitTestFlow() // resets segMode → watch, drops the recorded take
+    setRating(false); ratingRef.current = false
+    gotoMove(moveIdxRef.current, false)
+  }
+
+  /** Rate a specific range [s,e] — the whole routine or one segment. The music plays it once
+   *  while the engine records and scores your take. */
+  function startRating(s: number, e: number) {
     clearCountdown()
     const pb = playbackRef.current
     if (!pb) return
@@ -640,11 +663,11 @@ export function Practice() {
     setTestResult(null); setTestError(null)
     setMeter(0)
     setSegMode('test'); segModeRef.current = 'test'
-    setLoopRegion(loopStartRef.current, loopEndRef.current) // back to the segment start
+    setLoopRegion(s, e)
     runCountdown(() => {
       const p = playbackRef.current
       if (!p) return
-      prevTimeRef.current = loopStartRef.current
+      prevTimeRef.current = s
       testActiveRef.current = true
       engineRef.current?.startRecording()
       startTakeRecording()
@@ -652,8 +675,9 @@ export function Practice() {
     }, 'Your turn in', 3)
   }
 
-  /** The segment finished playing during a test: grade the take in detail. */
+  /** The range finished playing during a rating: grade the take in detail. */
   function finishTest() {
+    playbackRef.current?.pause()
     setPlaying(false)
     stopTakeRecording(true) // finalize the camera recording for side-by-side replay
     const eng = engineRef.current
@@ -677,14 +701,11 @@ export function Practice() {
     engineRef.current?.stopRecording()
     dropTakeRecording()
     playbackRef.current?.pause(); setPlaying(false)
-    exitTestFlow()
+    // Back to the rate menu (still in rating), not out to practice.
+    setTestResult(null); setTestError(null)
+    setSegMode('menu'); segModeRef.current = 'menu'
   }
   cancelTestRef.current = cancelTest
-
-  function watchAgain() {
-    exitTestFlow()
-    gotoMove(moveIdxRef.current)
-  }
 
   // ---- Side-by-side replay: the reference segment and YOUR recorded take, together ----
 
@@ -1010,7 +1031,7 @@ export function Practice() {
       case 'faster': changeRate(stepRate(rate, 1)); break
       case 'normalSpeed': changeRate(1); break
       case 'toggleMirror': setMirror((m) => !m); break
-      case 'next': segModeRef.current === 'results' || segModeRef.current === 'replay' ? completeSegment() : startTest(); break
+      case 'next': if (segModeRef.current === 'watch') completeSegment(); break
       case 'prev': gotoMove(nextOpen(moveIdxRef.current, -1)); break
       default: break
     }
@@ -1090,17 +1111,10 @@ export function Practice() {
             </div>
           </div>
           {!playbackOnly && (
-            <div>
-              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Camera</p>
-              <div className="flex gap-2">
-                <button onClick={() => setCameraOn(true)} className={chip(cameraOn)}>Test me after each segment</button>
-                <button onClick={() => setCameraOn(false)} className={chip(!cameraOn)}>Off · just follow</button>
-              </div>
-              <p className="mt-2 text-xs text-ink/45">
-                With the camera on, ✓ Got it flips to YOUR camera: you perform the segment to the
-                music and get a score with feedback on exactly what was off.
-              </p>
-            </div>
+            <p className="text-xs text-ink/45">
+              No camera here — practice is just watching and drilling. When you feel ready,
+              <b className="text-ink/70"> 🎤 Rate my dance</b> turns the camera on and scores you.
+            </p>
           )}
         </div>
 
@@ -1218,7 +1232,7 @@ export function Practice() {
             corner while you're watching along, so you can always see yourself with the
             tracking lines on you. Hidden only during side-by-side replay (your take is
             already on screen there). Stays mounted so the stream stays warm. */}
-        {cameraOn && (
+        {rating && (
           <div
             className={
               camMain
@@ -1277,7 +1291,45 @@ export function Practice() {
             </span>
           </>
         )}
-        {/* RESULTS — your rating and exactly where it went wrong, then Proceed. */}
+        {/* RATE MENU — pick what to be scored on: the whole routine or a single segment. */}
+        {inGo && segMode === 'menu' && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2.5xl border border-line bg-panel/95 p-5 shadow-soft">
+              <div className="flex items-center justify-between">
+                <p className="font-display text-lg font-bold">🎤 Rate my dance</p>
+                <button onClick={exitRating} className="text-sm text-ink/50 transition hover:text-ink">✕ Back to practice</button>
+              </div>
+              <p className="mt-1 text-sm text-ink/55">Dance it to the music and get scored, with tips on exactly what to fix.</p>
+              <button
+                onClick={() => startRating(trimStart, trimEnd)}
+                className="mt-4 w-full rounded-2xl bg-brand2 px-5 py-3 text-left font-display text-base font-bold text-[#06222a] shadow-soft transition hover:brightness-105 active:scale-[0.99]"
+              >
+                ▶ Rate the whole routine
+                <span className="block text-xs font-medium text-[#06222a]/70">Perform the full dance once, start to finish</span>
+              </button>
+              <p className="mt-4 mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Or just one segment</p>
+              <div className="flex flex-wrap gap-2">
+                {moves.filter((m) => !skip.includes(m.index)).map((m) => (
+                  <button
+                    key={m.index}
+                    onClick={() => startRating(m.startSec, m.endSec)}
+                    className="rounded-xl border border-line bg-ink/[0.06] px-4 py-2 text-sm font-semibold text-ink/80 transition hover:border-brand2/60 hover:text-ink active:scale-95"
+                  >
+                    {m.index + 1}
+                  </button>
+                ))}
+              </div>
+              {camStatus !== 'ready' && (
+                <p className="mt-4 flex items-center gap-2 text-xs text-ink/45">
+                  {camStatus === 'error'
+                    ? <span className="text-bad">{camError ?? 'No camera found.'}</span>
+                    : <><span className="h-3 w-3 animate-spin rounded-full border-2 border-ink/30 border-t-ink/70" /> Warming up your camera…</>}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+        {/* RESULTS — your rating and exactly where it went wrong, then Done. */}
         {inGo && segMode === 'results' && (
           <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
             <div className="w-full max-w-md rounded-2.5xl border border-line bg-panel/95 p-5 shadow-soft">
@@ -1326,13 +1378,13 @@ export function Practice() {
                     🎬 Side by side
                   </button>
                 )}
-                <button onClick={watchAgain} className={btn}>👁 Watch again</button>
-                <button onClick={startTest} className={btn}>↻ Try again</button>
+                <button onClick={() => startRating(loopStartRef.current, loopEndRef.current)} className={btn}>↻ Try again</button>
+                <button onClick={() => setSegMode('menu')} className={btn}>🎤 Rate something else</button>
                 <button
-                  onClick={completeSegment}
+                  onClick={exitRating}
                   className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
                 >
-                  Proceed →
+                  ✓ Done
                 </button>
               </div>
             </div>
@@ -1456,15 +1508,28 @@ export function Practice() {
             )}
           </div>
 
-          {/* Got it (→ camera test) / repeat */}
+          {/* Got it / repeat — pure practice, no camera */}
           <div className="flex flex-wrap items-center justify-center gap-2">
             <button onClick={() => gotoMove(nextOpen(moveIdx, -1))} className={btn + ' !px-3'}>‹ prev</button>
             <button onClick={repeatMove} className="rounded-xl border border-line bg-ink/[0.06] px-5 py-2.5 text-sm font-semibold text-ink/80 transition hover:text-ink active:scale-95">↻ Repeat</button>
-            <button onClick={startTest} className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95">
-              {scoring ? '✓ Got it — test me' : '✓ Got it'}
+            <button onClick={completeSegment} className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95">
+              ✓ Got it
             </button>
             <button onClick={() => gotoMove(nextOpen(moveIdx, 1))} className={btn + ' !px-3'}>skip ›</button>
           </div>
+
+          {/* Rate my dance — the one place the camera comes on */}
+          {!playbackOnly && (
+            <div className="flex justify-center">
+              <button
+                onClick={enterRating}
+                className="rounded-xl border border-brand2/50 bg-brand2/15 px-5 py-2.5 text-sm font-bold text-ink transition hover:bg-brand2/25 active:scale-95"
+                title="Turn the camera on and get scored on the whole routine or one segment"
+              >
+                🎤 Rate my dance
+              </button>
+            </div>
+          )}
 
           {/* Coaching line */}
           <div className="flex min-h-[24px] items-center justify-center text-sm">
@@ -1472,9 +1537,9 @@ export function Practice() {
               <span className="rounded-full bg-good/20 px-3 py-1 font-semibold text-good">{toast}</span>
             ) : (
               <span className="text-ink/40">
-                {scoring
-                  ? 'Watch and drill this segment, then ✓ Got it — the camera tests you on it.'
-                  : 'Drill this segment, then ✓ Got it for the next one.'}
+                {playbackOnly
+                  ? 'Drill this segment, then ✓ Got it for the next one.'
+                  : 'Drill each segment. When you are ready, 🎤 Rate my dance checks you on camera.'}
               </span>
             )}
           </div>
@@ -1486,21 +1551,21 @@ export function Practice() {
           </button>
           <button onClick={backToResults} className={btn}>‹ Back to feedback</button>
           <button
-            onClick={completeSegment}
+            onClick={exitRating}
             className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
           >
-            Proceed →
+            ✓ Done
           </button>
         </div>
       ) : (
         <div className="flex min-h-[24px] items-center justify-center text-sm">
           <span className="text-ink/40">
-            {segMode === 'test' ? '🎥 Dance the segment — you’re being scored.' : 'Check your feedback above.'}
+            {segMode === 'menu' ? 'Pick what to be rated on.' : segMode === 'test' ? '🎥 Dance it — you’re being scored.' : 'Check your feedback above.'}
           </span>
         </div>
       )}
 
-      {cameraOn && cameras.length > 0 && (
+      {rating && cameras.length > 0 && (
         <div className="flex justify-center">
           <select value={activeCam ?? ''} onChange={(e) => void switchCamera(e.target.value)} className="max-w-[240px] truncate rounded-xl border border-line bg-panel px-2 py-1.5 text-xs text-ink/80 outline-none">
             {cameras.map((c, i) => <option key={c.deviceId || i} value={c.deviceId}>{c.label || `Camera ${i + 1}`}</option>)}
