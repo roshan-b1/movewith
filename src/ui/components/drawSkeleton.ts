@@ -91,6 +91,9 @@ export interface DrawOptions {
   baseColor?: string
   /** 0..1 visibility threshold below which a point is skipped. */
   minVisibility?: number
+  /** Set false to draw WITHOUT clearing the canvas first (stacking several skeletons,
+   *  e.g. the multi-dancer picker). Default true. */
+  clear?: boolean
 }
 
 export function drawSkeleton(
@@ -101,7 +104,7 @@ export function drawSkeleton(
   const { canvas } = ctx
   const w = canvas.width
   const h = canvas.height
-  ctx.clearRect(0, 0, w, h)
+  if (opts.clear !== false) ctx.clearRect(0, 0, w, h)
   if (!landmarks || landmarks.length === 0) return
 
   const project = opts.project ?? imageProjector

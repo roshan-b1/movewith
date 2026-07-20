@@ -32,34 +32,50 @@ export function Library() {
   }
 
   // One upload path. It always analyzes the moves (so both practice and "Test my skills"
-  // work) — the camera choice happens later, per session, not here.
+  // work). Uploads started from the Test-my-skills modal open straight into the rater;
+  // uploads from the main dropzone open into practice.
+  const uploadIntentRef = useRef<'practice' | 'rate'>('practice')
   function importFile(file: File | undefined) {
     if (!file) return
     const name = file.name.replace(/\.[^.]+$/, '')
-    void importVideo(file, name || 'My dance', false)
+    void importVideo(file, name || 'My dance', false, uploadIntentRef.current)
+    uploadIntentRef.current = 'practice'
+  }
+  function uploadForRating() {
+    uploadIntentRef.current = 'rate'
+    setPickRate(false)
+    fileInput.current?.click()
   }
 
   return (
     <div className="mx-auto max-w-5xl px-5 py-12 sm:px-8 sm:py-16">
       {/* Hero */}
       <header className="mb-8 animate-fade-up">
+        <div className="mb-6 flex items-center gap-2.5">
+          <img src="/logo.svg" alt="" className="h-9 w-9" />
+          <span className="font-display text-xl font-bold tracking-tightish">
+            Move<span className="text-gradient">With</span>
+          </span>
+        </div>
         <h1 className="font-display text-5xl font-bold leading-[0.95] tracking-tightish sm:text-7xl">
           Learn any dance,
           <br />
           <span className="text-gradient italic">move by move.</span>
         </h1>
         <p className="mt-5 max-w-xl text-lg leading-relaxed text-ink/60">
-          Upload a tutorial. It splits into short segments you learn one at a time, then test
-          your skills on camera when you are ready. Everything runs on your device.
+          Drop in any dance video and it splits into short moves. Each one loops on its own,
+          slowed down and mirrored, so you learn without ever touching play, pause, or rewind.
+          When you are ready, test yourself on camera. It all runs on your device.
         </p>
       </header>
 
       {/* Two top-level actions: upload a tutorial, or test your skills on any dance you have */}
       <div className="mb-10 grid gap-4 sm:grid-cols-3">
         <label
+          onClick={() => { uploadIntentRef.current = 'practice' }}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
           onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => { e.preventDefault(); setDragOver(false); importFile(e.dataTransfer.files?.[0]) }}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); uploadIntentRef.current = 'practice'; importFile(e.dataTransfer.files?.[0]) }}
           className={[
             'group flex cursor-pointer flex-col items-center justify-center rounded-2.5xl border-2 border-dashed p-8 text-center transition-all duration-200 sm:col-span-2',
             dragOver ? 'scale-[1.01] border-brand bg-brand/10 shadow-glow' : 'border-ink/20 bg-ink/[0.02] hover:border-ink/35 hover:bg-ink/[0.04]',
@@ -93,23 +109,23 @@ export function Library() {
           {[
             {
               n: '1',
-              t: 'Add a tutorial',
-              d: 'Pick any dance video off your phone or laptop. Nothing gets uploaded to a server: the file stays on your device.',
+              t: 'Add a dance video',
+              d: 'Drop in any tutorial or dance clip from your phone or laptop. It stays on your device, nothing gets uploaded to a server.',
             },
             {
               n: '2',
-              t: 'Cut it into segments',
-              d: 'Trim off the intro, then tap along to mark where each move starts and ends. Short segments beat one long routine.',
+              t: 'It splits into moves',
+              d: 'The dance is cut into short segments you learn one at a time, instead of scrubbing back and forth through one long video.',
             },
             {
               n: '3',
-              t: 'Learn it, watching yourself',
-              d: 'Loop a segment, slow it to half speed, mirror it. Turn the camera on to dance beside yourself and watch each take play back before you move on.',
+              t: 'Each move loops, hands-free',
+              d: 'No more slowing the video down and jabbing play, pause, rewind. Every segment repeats on its own, at half speed and mirrored so it is easy to follow, until the move clicks.',
             },
             {
               n: '4',
-              t: 'Test your skills',
-              d: 'When you are ready, run the whole dance or one segment on camera. It scores each part and tells you which you nailed and which need work.',
+              t: 'Then test yourself',
+              d: 'Turn the camera on to dance beside yourself and watch each take play back. When you are ready, Test my skills scores each part and shows which you nailed and which to keep drilling.',
             },
           ].map((s) => (
             <li key={s.n} className="rounded-2.5xl border border-line bg-panel/60 p-4">
@@ -250,7 +266,10 @@ export function Library() {
         ))}
       </div>
 
-      <footer className="mt-14 text-center text-xs text-ink/30">Your camera never leaves your device. Everything runs locally.</footer>
+      <footer className="mt-14 text-center text-xs text-ink/30">
+        Your camera and your videos never leave your device. Only an anonymous count of visits and
+        uploads is recorded.
+      </footer>
 
       {/* Test my skills — pick which dance to be scored on (or upload one if there are none) */}
       {pickRate && (
@@ -282,7 +301,7 @@ export function Library() {
                   ))}
                 </div>
                 <button
-                  onClick={() => { setPickRate(false); fileInput.current?.click() }}
+                  onClick={uploadForRating}
                   className="mt-3 w-full rounded-xl border border-dashed border-ink/25 px-4 py-2.5 text-sm font-medium text-ink/60 transition hover:border-ink/40 hover:text-ink"
                 >
                   ↑ Upload a new dance
@@ -294,7 +313,7 @@ export function Library() {
                   You need a dance first — the scoring runs against a tutorial you have uploaded.
                 </p>
                 <button
-                  onClick={() => { setPickRate(false); fileInput.current?.click() }}
+                  onClick={uploadForRating}
                   className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-brand px-4 py-3 text-sm font-bold text-cream shadow-glow transition hover:brightness-105 active:scale-95"
                 >
                   ↑ Upload a dance

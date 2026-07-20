@@ -30,9 +30,9 @@ export interface BuildArgs {
   sourceType?: 'upload' | 'bundled'
 }
 
-/** Precompute angles/visibility for every frame and cut the track into 8-counts. */
-export function buildReferenceTrack(args: BuildArgs): ReferenceTrack {
-  const frames: ReferenceFrame[] = args.rawFrames
+/** Precompute angles/visibility for a raw frame sequence (one person's timeline). */
+export function buildFrames(rawFrames: RawFrame[]): ReferenceFrame[] {
+  return rawFrames
     .slice()
     .sort((a, b) => a.t - b.t)
     .map((f) => ({
@@ -42,6 +42,11 @@ export function buildReferenceTrack(args: BuildArgs): ReferenceTrack {
       angles: jointAngles(f.world),
       visibility: jointVisibility(f.world),
     }))
+}
+
+/** Precompute angles/visibility for every frame and cut the track into 8-counts. */
+export function buildReferenceTrack(args: BuildArgs): ReferenceTrack {
+  const frames: ReferenceFrame[] = buildFrames(args.rawFrames)
 
   const sections = buildSections(args.tempo, {
     durationSec: args.durationSec,

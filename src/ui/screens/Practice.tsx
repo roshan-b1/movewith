@@ -86,13 +86,8 @@ function sizeCanvas(c: HTMLCanvasElement) {
   const h = Math.max(2, Math.round(r.height))
   if (c.width !== w || c.height !== h) { c.width = w; c.height = h }
 }
-// Move size choices: the target length per chunk that auto-detection aims for. Each chunk
-// then ends on the nearest pause/hold in the dance, so it stops between steps not mid-move.
-const MOVE_SIZES = [
-  { label: '~5s', sec: 5 },
-  { label: '~8s', sec: 8 },
-  { label: '~10s', sec: 10 },
-] as const
+// Colors telling the dancers apart in the multi-dancer picker (skeleton + chip match).
+const DANCER_COLORS = ['#22d3ee', '#ff2e88', '#a3e635', '#ff9f1c'] as const
 
 // Move boundaries as tick marks for the scrubber.
 function moveTicks(moves: Move[]): Section[] {
@@ -106,6 +101,7 @@ export function Practice() {
   const back = useSession((s) => s.back)
   const updateProgress = useSession((s) => s.updateProgress)
   const renameTrack = useSession((s) => s.renameTrack)
+  const selectDancer = useSession((s) => s.selectDancer)
 
   const duration = track.source.durationSec
   const playbackOnly = track.frames.length === 0
@@ -115,7 +111,9 @@ export function Practice() {
 
   // ---- setup choices (made before practice) ----
   const [phase, setPhase] = useState<'setup' | 'bounds' | 'go'>('setup')
-  const [moveSec, setMoveSec] = useState<number>(savedSetup?.moveSec ?? 8)
+  // Target length auto-detect aims for per segment. No UI — the primary path is cutting
+  // your own segments while watching; auto-detect just needs a sensible default.
+  const [moveSec] = useState<number>(savedSetup?.moveSec ?? 8)
   const [reps, setReps] = useState<number>(savedSetup?.reps ?? Infinity)
   const [breakSecs, setBreakSecs] = useState<number>(savedSetup?.breakSecs ?? 3)
   // Camera turns on in two places, never in plain practice:
@@ -141,6 +139,9 @@ export function Practice() {
   const [playing, setPlaying] = useState(false)
   const [rate, setRate] = useState(1)
   const [mirror, setMirror] = useState(false)
+  // Draw the tracked skeleton over the instructor. Never shown while cutting segments;
+  // toggleable in practice/test in case the tracking is off for a video.
+  const [tracking, setTracking] = useState(true)
   const [previewIdx, setPreviewIdx] = useState(-1) // segment being loop-previewed in the editor
   const [creating, setCreating] = useState(false) // segment-creator mode (tap to place cuts)
   const [meter, setMeter] = useState(0)
@@ -197,6 +198,7 @@ export function Practice() {
   const camRef = useRef<CameraHandle | null>(null)
   const trackRef = useRef<ReferenceTrack>(track)
   const mirrorRef = useRef(mirror)
+  const trackingRef = useRef(true)
   const movesRef = useRef<Move[]>(moves)
   const moveIdxRef = useRef(0)
   const trimStartRef = useRef(0)
@@ -250,6 +252,12 @@ export function Practice() {
     if (pb) pb.seek(pb.getTime())
   }, [mirror])
   useEffect(() => void (phaseRef.current = phase), [phase])
+  useEffect(() => {
+    trackingRef.current = tracking
+    // Redraw immediately so the overlay clears/appears without waiting for playback.
+    const pb = playbackRef.current
+    if (pb) pb.seek(pb.getTime())
+  }, [tracking])
   useEffect(() => { trimStartRef.current = trimStart; trimEndRef.current = trimEnd }, [trimStart, trimEnd])
   // Keep skip state + the controller's skip ranges (for full-song playback) in sync.
   useEffect(() => {
@@ -368,7 +376,30 @@ export function Practice() {
           else { dh = h; dw = h * va; oy = 0; ox = (w - dw) / 2 }
           try { ctx.drawImage(video, ox, oy, dw, dh) } catch { /* not ready yet */ }
         }
-        if (frame?.image) {
+        // Multi-dancer picker (rater menu): draw EVERY dancer's skeleton in its own
+        // color so "which dancer?" is answerable at a glance — the chosen one bold,
+        // the others thin.
+        const dancers = trackRef.current.dancers
+        if (segModeRef.current === 'menu' && dancers && dancers.length > 1) {
+          dancers.forEach((df, di) => {
+            const j = nearestFrameIndex(df, t)
+            const dfr = j >= 0 ? df[j] : null
+            const active = di === (trackRef.current.activeDancer ?? 0)
+            if (dfr?.image) {
+              drawSkeleton(ctx, dfr.image, {
+                project: containProjector(vw, vh),
+                baseColor: DANCER_COLORS[di % DANCER_COLORS.length],
+                lineWidth: Math.max(active ? 3.5 : 1.5, w * (active ? 0.007 : 0.003)),
+                jointRadius: Math.max(2.5, w * 0.004),
+                clear: false, // stack the skeletons — clearRect already ran above
+              })
+            }
+          })
+        }
+        // The skeleton overlay belongs to practicing/testing — never while cutting
+        // segments (the bounds step is about the video, not the tracking), and it can
+        // be toggled off entirely if the tracking is bad for a particular video.
+        else if (frame?.image && trackingRef.current && phaseRef.current === 'go') {
           drawSkeleton(ctx, frame.image, {
             project: containProjector(vw, vh),
             baseColor: 'rgba(34,211,238,0.95)',
@@ -470,10 +501,11 @@ export function Practice() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Camera + pose engine. Runs when self-view or the rater is on — never in plain practice.
-  // The pose engine only starts when scoring (rating); self-view just needs the raw stream.
+  // Camera + pose engine. Runs when self-view or the rater is on, and ONLY once you're
+  // actually practicing (phase 'go') — never during setup or segment cutting. The pose
+  // engine only starts when scoring (rating); self-view just needs the raw stream.
   useEffect(() => {
-    if ((!selfView && !rating) || playbackOnly) return
+    if ((!selfView && !rating) || playbackOnly || phase !== 'go') return
     let cam: CameraHandle | null = null
     let disposed = false
     const getReference = (): ReferenceContext => {
@@ -542,7 +574,7 @@ export function Practice() {
       ;(camRef.current ?? cam)?.stop(); camRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [track.id, rating, selfView, playbackOnly])
+  }, [track.id, rating, selfView, playbackOnly, phase])
 
   useEffect(() => {
     const cs = [instructorCanvasRef.current, instructorOverlayRef.current, webcamCanvasRef.current].filter(
@@ -1182,15 +1214,6 @@ export function Practice() {
 
         <div className="space-y-5 rounded-2.5xl border border-line bg-panel/70 p-6 shadow-soft">
           <div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Segment length</p>
-            <div className="flex gap-2">
-              {MOVE_SIZES.map((m) => (
-                <button key={m.label} onClick={() => setMoveSec(m.sec)} className={chip(moveSec === m.sec)}>{m.label}</button>
-              ))}
-            </div>
-            <p className="mt-2 text-xs text-ink/45">The dance splits into short segments you learn one at a time. You set them up next; this is just the target length.</p>
-          </div>
-          <div>
             <p className="mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Repeat each segment</p>
             <div className="flex flex-wrap items-center gap-2">
               <button onClick={() => setReps(Infinity)} className={chip(reps === Infinity)}>Loop till I move on</button>
@@ -1306,7 +1329,7 @@ export function Practice() {
             During a camera test the reference layers go invisible (NOT unmounted — the
             video keeps playing so its music drives your take). In side-by-side replay
             they shrink to the LEFT HALF, with your recorded take on the right. */}
-        <div className={camMain ? 'pointer-events-none absolute inset-0 opacity-0' : (replaying || selfTrying || (selfView && segMode === 'watch')) ? 'absolute inset-y-0 left-0 w-1/2' : 'absolute inset-0'}>
+        <div className={camMain ? 'pointer-events-none absolute inset-0 opacity-0' : (replaying || selfTrying || (inGo && selfView && segMode === 'watch')) ? 'absolute inset-y-0 left-0 w-1/2' : 'absolute inset-0'}>
           {videoUrl ? (
             <>
               <video
@@ -1354,7 +1377,7 @@ export function Practice() {
             instructor) during self-view and self-view takes; a small corner tile on the rater
             menu. Hidden during side-by-side replay (your recorded take is on screen there).
             Stays mounted so the stream stays warm. */}
-        {(selfView || rating) && (
+        {inGo && (selfView || rating) && (
           <div
             className={
               camMain
@@ -1422,25 +1445,52 @@ export function Practice() {
             </span>
           </>
         )}
-        {/* RATE MENU — the full run-through (scored per segment) or a single segment. */}
+        {/* RATE MENU — the full run-through (scored per segment) or a single segment.
+            With 2+ dancers in the video the backdrop stays light so the color-coded
+            skeletons behind it are visible while picking. */}
         {inGo && segMode === 'menu' && (
-          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className={`absolute inset-0 z-30 flex items-center justify-center p-4 ${(track.dancers?.length ?? 0) > 1 ? 'bg-black/35' : 'bg-black/70 backdrop-blur-sm'}`}>
             <div className="w-full max-w-md rounded-2.5xl border border-line bg-panel/95 p-5 shadow-soft">
               <div className="flex items-center justify-between">
                 <p className="font-display text-lg font-bold">🎯 Test my skills</p>
                 <button onClick={exitRating} className="text-sm text-ink/50 transition hover:text-ink">✕ Exit</button>
               </div>
               <p className="mt-1 text-sm text-ink/55">Dance it to the music and get scored, with tips on exactly what to fix.</p>
+              {track.dancers && track.dancers.length > 1 && (
+                <div className="mt-3 rounded-xl border border-line bg-ink/[0.04] p-3">
+                  <p className="text-xs font-medium uppercase tracking-wider text-ink/45">
+                    {track.dancers.length} dancers found · grade me against
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {track.dancers.map((_, i) => {
+                      const color = DANCER_COLORS[i % DANCER_COLORS.length]!
+                      const active = (track.activeDancer ?? 0) === i
+                      return (
+                        <button
+                          key={i}
+                          onClick={() => { void selectDancer(i).then(() => { const pb = playbackRef.current; if (pb) pb.seek(pb.getTime()) }) }}
+                          className={`flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-semibold transition active:scale-95 ${active ? 'border-transparent text-[#0b0b16]' : 'border-line text-ink/70 hover:text-ink'}`}
+                          style={active ? { background: color } : undefined}
+                        >
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ background: active ? '#0b0b16' : color }} />
+                          Dancer {i + 1}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <p className="mt-2 text-xs text-ink/45">The skeletons on the video match these colors · your pick is the bold one.</p>
+                </div>
+              )}
               <button
                 onClick={startRunThrough}
                 className="mt-4 w-full rounded-2xl bg-brand2 px-5 py-3 text-left font-display text-base font-bold text-[#06222a] shadow-soft transition hover:brightness-105 active:scale-[0.99]"
               >
-                ▶ Full run-through
+                ▶ Full run-through · recommended
                 <span className="block text-xs font-medium text-[#06222a]/70">
-                  Dance every segment in order · each one scored, then a full recap
+                  Dance the whole thing once · every part scored, then a full recap
                 </span>
               </button>
-              <p className="mt-4 mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Or just one segment</p>
+              <p className="mt-4 mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Or just one part</p>
               <div className="flex flex-wrap gap-2">
                 {moves.filter((m) => !skip.includes(m.index)).map((m) => (
                   <button
@@ -1452,6 +1502,12 @@ export function Practice() {
                   </button>
                 ))}
               </div>
+              {moves.length <= 1 && (
+                <p className="mt-2 text-xs text-ink/40">
+                  Parts come from the segments you cut in Practice · with none cut, the whole
+                  dance is one part.
+                </p>
+              )}
               {camStatus !== 'ready' && (
                 <p className="mt-4 flex items-center gap-2 text-xs text-ink/45">
                   {camStatus === 'error'
@@ -1678,6 +1734,15 @@ export function Practice() {
               ))}
             </div>
             <button onClick={() => setMirror((m) => !m)} className={mirror ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}>🪞 Mirror</button>
+            {hasFrames && !!videoUrl && (
+              <button
+                onClick={() => setTracking((v) => !v)}
+                className={tracking ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}
+                title="Show or hide the tracked skeleton on the instructor"
+              >
+                🦴 Tracking
+              </button>
+            )}
             <button onClick={playAll} className={fullRun ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn} title="Practice the whole song start to finish">▶ Full song</button>
             <button onClick={editSegments} className={btn} title="Go back and edit the segments">✎ Edit segments</button>
             {voiceSupported && (

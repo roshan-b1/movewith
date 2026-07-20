@@ -16,6 +16,9 @@ export interface PoseProvider {
   init(): Promise<void>
   /** Detect a pose from a still frame (video seeked to a time, or an image). */
   detectImage(input: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement): Promise<PoseResult | null>
+  /** Detect EVERY person in a still frame (multi-dancer videos). Order is arbitrary —
+   *  association across frames is the caller's job (core/pose/people.ts). */
+  detectImageAll(input: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement): Promise<PoseResult[]>
   /** Detect a pose from a live stream frame. `timestampMs` must increase monotonically. */
   detectLive(input: HTMLVideoElement, timestampMs: number): PoseResult | null
   /** Release GPU/wasm resources. */

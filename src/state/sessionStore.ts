@@ -14,6 +14,7 @@ const ENABLE_DEMO_TRACK = false
 // Bundled routines that no longer exist — cleaned out of returning users' libraries.
 const REMOVED_TRACK_IDS = ['macarena-v1']
 import { extractReferenceFromVideo, type ExtractProgress } from '../engine/extractReference'
+import { trackEvent, trackVisitOnce } from '../engine/analytics'
 import { getPoseProvider } from '../providers/instance'
 import {
   listTracks,
@@ -44,8 +45,10 @@ export interface SessionState {
 
   init: () => Promise<void>
   openTrack: (id: string, intent?: OpenIntent) => Promise<void>
-  importVideo: (file: File, name: string, playbackOnly?: boolean) => Promise<void>
+  importVideo: (file: File, name: string, playbackOnly?: boolean, intent?: OpenIntent) => Promise<void>
   renameTrack: (id: string, name: string) => Promise<void>
+  /** Multi-dancer track: switch which dancer is learned/graded against. */
+  selectDancer: (index: number) => Promise<void>
   removeTrack: (id: string) => Promise<void>
   updateProgress: (next: DanceProgress) => Promise<void>
   back: () => void
@@ -69,6 +72,7 @@ export const useSession = create<SessionState>((set, get) => ({
 
   async init() {
     set({ status: 'loading', error: null })
+    trackVisitOnce()
     try {
       // Clean out old generator versions and removed bundled routines. While the demo is
       // disabled its track goes too, so returning users don't keep a stale copy.
@@ -106,7 +110,7 @@ export const useSession = create<SessionState>((set, get) => ({
     }
   },
 
-  async importVideo(file, name, playbackOnly = false) {
+  async importVideo(file, name, playbackOnly = false, intent = 'practice') {
     set({ status: 'extracting', error: null, extract: { phase: 'loading', ratio: 0, message: 'Starting…' } })
     try {
       const { track, videoBlob } = await extractReferenceFromVideo({
@@ -120,8 +124,12 @@ export const useSession = create<SessionState>((set, get) => ({
       if (track.videoBlobKey) await saveVideo(track.videoBlobKey, videoBlob)
       await saveTrack(track)
       await saveProgress(freshProgress(track.id))
+      // Count the upload (anonymous id + duration only — the video stays on-device).
+      trackEvent('upload', { durationSec: Math.round(track.source.durationSec), dancers: track.dancers?.length ?? 1 })
       set({ tracks: await listTracks(), status: 'idle', extract: null })
-      await get().openTrack(track.id)
+      // Carry the caller's intent through: an upload started from "Test my skills"
+      // opens straight into the rater, not the practice setup.
+      await get().openTrack(track.id, intent)
     } catch (e) {
       set({ status: 'error', error: errMsg(e), extract: null })
     }
@@ -139,6 +147,15 @@ export const useSession = create<SessionState>((set, get) => ({
       tracks: await listTracks(),
       activeTrack: active && active.id === id ? updated : active,
     })
+  },
+
+  async selectDancer(index) {
+    const track = get().activeTrack
+    const frames = track?.dancers?.[index]
+    if (!track || !frames) return
+    const updated = { ...track, frames, activeDancer: index }
+    await saveTrack(updated)
+    set({ activeTrack: updated, tracks: await listTracks() })
   },
 
   async removeTrack(id) {

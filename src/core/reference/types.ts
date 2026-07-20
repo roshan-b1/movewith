@@ -39,8 +39,15 @@ export interface ReferenceTrack {
   /** Key of the original video Blob stored separately in IndexedDB (null for fixtures). */
   videoBlobKey: string | null
   tempo: Tempo
+  /** The ACTIVE dancer's frames — everything downstream (scoring, ghost, skeleton)
+   *  reads these, so picking a dancer is just swapping this array. */
   frames: ReferenceFrame[]
   sections: Section[]
+  /** Every dancer found in the video (most prominent first). Present only when the
+   *  video had 2+ people; `frames` always equals `dancers[activeDancer]` then. */
+  dancers?: ReferenceFrame[][]
+  /** Which entry of `dancers` is being learned/graded against. */
+  activeDancer?: number
 }
 
 /** The segments + settings the dancer set up, saved so they're restored next time. */

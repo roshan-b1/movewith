@@ -33,6 +33,17 @@ function mapResult(res: PoseLandmarkerResult | undefined): PoseResult | null {
   return { world: world.map(toLandmark), image: image.map(toLandmark) }
 }
 
+function mapAll(res: PoseLandmarkerResult | undefined): PoseResult[] {
+  if (!res || !res.worldLandmarks) return []
+  const out: PoseResult[] = []
+  for (let i = 0; i < res.worldLandmarks.length; i++) {
+    const world = res.worldLandmarks[i]
+    const image = res.landmarks[i]
+    if (world && image) out.push({ world: world.map(toLandmark), image: image.map(toLandmark) })
+  }
+  return out
+}
+
 export interface MediaPipePoseOptions {
   /** 'GPU' (default) falls back to 'CPU' automatically if GPU init fails. */
   delegate?: 'GPU' | 'CPU'
@@ -67,11 +78,13 @@ export class MediaPipePoseProvider implements PoseProvider {
   private async doInit(): Promise<void> {
     const vision = await FilesetResolver.forVisionTasks(this.opts.wasmBase)
 
+    // IMAGE mode (offline extraction) detects several people so multi-dancer videos can
+    // offer a "which dancer?" picker. The live webcam stays single-pose for fps.
     const make = (runningMode: 'IMAGE' | 'VIDEO', delegate: 'GPU' | 'CPU', modelUrl: string) =>
       PoseLandmarker.createFromOptions(vision, {
         baseOptions: { modelAssetPath: modelUrl, delegate },
         runningMode,
-        numPoses: 1,
+        numPoses: runningMode === 'IMAGE' ? 4 : 1,
         minPoseDetectionConfidence: 0.5,
         minPosePresenceConfidence: 0.5,
         minTrackingConfidence: 0.5,
@@ -99,6 +112,14 @@ export class MediaPipePoseProvider implements PoseProvider {
     await this.init()
     if (!this.image) return null
     return mapResult(this.image.detect(input))
+  }
+
+  async detectImageAll(
+    input: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement,
+  ): Promise<PoseResult[]> {
+    await this.init()
+    if (!this.image) return []
+    return mapAll(this.image.detect(input))
   }
 
   detectLive(input: HTMLVideoElement, timestampMs: number): PoseResult | null {

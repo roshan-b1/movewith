@@ -4,7 +4,8 @@
 
 import { guess } from 'web-audio-beat-detector'
 import { makeTempo } from '../core/audio/beats'
-import { buildReferenceTrack, type RawFrame } from '../core/reference/build'
+import { buildReferenceTrack, buildFrames, type RawFrame } from '../core/reference/build'
+import { associatePeople, type DetectedFrame } from '../core/pose/people'
 import type { ReferenceTrack } from '../core/reference/types'
 import type { PoseProvider } from '../providers/poseProvider'
 
@@ -35,6 +36,21 @@ export interface ExtractResult {
   videoBlob: Blob
 }
 
+/** Yield to the event loop WITHOUT rAF or setTimeout: rAF is suspended and timers are
+ *  throttled to 1s+ in background tabs, which used to freeze extraction the moment the
+ *  user switched away. MessageChannel messages are never throttled, so the upload keeps
+ *  processing at full speed even with the tab hidden. */
+function nextTick(): Promise<void> {
+  return new Promise((resolve) => {
+    const ch = new MessageChannel()
+    ch.port1.onmessage = () => {
+      ch.port1.close()
+      resolve()
+    }
+    ch.port2.postMessage(null)
+  })
+}
+
 function loadVideo(url: string): Promise<HTMLVideoElement> {
   return new Promise((resolve, reject) => {
     const v = document.createElement('video')
@@ -58,8 +74,18 @@ function seekTo(video: HTMLVideoElement, t: number): Promise<void> {
       settled = true
       video.removeEventListener('seeked', onSeeked)
       if (timer !== undefined) clearTimeout(timer)
-      // Give the compositor a tick so the frame is actually painted before detect().
-      requestAnimationFrame(() => resolve())
+      // Give the frame a tick to settle before detect(). Visible tab: one rAF (a real
+      // paint). Hidden tab: rAF never fires — a MessageChannel tick (never throttled)
+      // keeps the extraction running while the user is on another tab. The timer covers
+      // the one frame where the tab goes hidden AFTER its rAF was scheduled.
+      if (document.hidden) {
+        void nextTick().then(resolve)
+      } else {
+        let done = false
+        const go = () => { if (!done) { done = true; resolve() } }
+        requestAnimationFrame(go)
+        setTimeout(go, 350)
+      }
     }
     const onSeeked = () => finish()
 
@@ -110,25 +136,35 @@ export async function extractReferenceFromVideo(args: ExtractArgs): Promise<Extr
 
     const tempo = await detectTempo(args.file, onProgress)
 
-    // Sample frames (skipped entirely in playback-only mode).
-    const rawFrames: RawFrame[] = []
+    // Sample frames (skipped entirely in playback-only mode). Every person in each
+    // frame is detected; association into per-dancer tracks happens afterwards.
+    let rawFrames: RawFrame[] = []
+    let dancerTracks: RawFrame[][] = []
     if (!skipPose) {
+      const detected: DetectedFrame[] = []
       const count = Math.min(maxFrames, Math.max(2, Math.floor(durationSec * sampleFps)))
       for (let i = 0; i < count; i++) {
         const t = (i / (count - 1)) * Math.max(0, durationSec - 0.05)
         await seekTo(video, t)
-        const res = await args.provider.detectImage(video)
-        if (res) rawFrames.push({ t, world: res.world, image: res.image })
+        const people = await args.provider.detectImageAll(video)
+        if (people.length > 0) detected.push({ t, people })
         onProgress?.({
           phase: 'pose',
           ratio: (i + 1) / count,
           message: `Tracking movement… ${Math.round(((i + 1) / count) * 100)}%`,
         })
-        // Yield to the event loop so the progress UI can paint.
-        if (i % 4 === 0) await new Promise((r) => setTimeout(r, 0))
+        // Yield to the event loop so the progress UI can paint. MessageChannel, not
+        // setTimeout — background tabs clamp timers to 1s+, which made the upload crawl.
+        if (i % 4 === 0) await nextTick()
       }
+      // Stitch detections into stable per-person tracks; track 0 is the main dancer.
+      dancerTracks = associatePeople(detected)
+      rawFrames = dancerTracks[0] ?? []
       if (rawFrames.length < 2) {
         throw new Error('No body detected in this video. Try a clearer, well-lit clip with a full-body shot.')
+      }
+      if (dancerTracks.length > 1) {
+        onProgress?.({ phase: 'building', ratio: 0.85, message: `Found ${dancerTracks.length} dancers…` })
       }
     }
 
@@ -147,6 +183,13 @@ export async function extractReferenceFromVideo(args: ExtractArgs): Promise<Extr
       beatsPerSection: 8,
       sourceType: 'upload',
     })
+    // Multi-dancer video: keep every dancer's timeline so "Test my skills" can offer
+    // a picker. `frames` stays the active dancer (0 = most prominent, by default).
+    if (dancerTracks.length > 1) {
+      track.dancers = dancerTracks.map(buildFrames)
+      track.activeDancer = 0
+      track.frames = track.dancers[0]!
+    }
 
     onProgress?.({ phase: 'done', ratio: 1, message: 'Ready!' })
     return { track, videoBlob: args.file }
