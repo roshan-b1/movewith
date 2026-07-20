@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- MoveWith mark: a dancer mid-move with a cyan motion echo, drawn like the
+       app's tracking skeleton (round limbs, joint dots). Transparent background. -->
+  <!-- Motion echo (the "previous frame") -->
+  <g stroke="#22d3ee" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.5" transform="translate(-3.4 2.8)">
+    <path d="M52 9 43.5 17 35 24" />
+    <path d="M35 24 26 31 17 36" />
+    <path d="M35 24 29.5 38" />
+    <path d="M29.5 38 20.5 45 17 56" />
+    <path d="M29.5 38 38 47 45.5 55" />
+  </g>
+  <circle cx="24.1" cy="18.3" r="5" fill="#22d3ee" opacity="0.5" />
+  <!-- The dancer -->
+  <g stroke="#ff2e88" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M52 9 43.5 17 35 24" />
+    <path d="M35 24 26 31 17 36" />
+    <path d="M35 24 29.5 38" />
+    <path d="M29.5 38 20.5 45 17 56" />
+    <path d="M29.5 38 38 47 45.5 55" />
+  </g>
+  <circle cx="27.5" cy="15.5" r="5" fill="#ff2e88" />
+  <!-- Tracking joints -->
+  <g fill="#ffffff">
+    <circle cx="52" cy="9" r="2" />
+    <circle cx="17" cy="36" r="1.8" />
+    <circle cx="17" cy="56" r="1.8" />
+    <circle cx="45.5" cy="55" r="1.8" />
+    <circle cx="29.5" cy="38" r="1.8" />
+  </g>
+</svg>
