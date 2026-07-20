@@ -4,6 +4,7 @@
 // low-motion instant so it lands on a natural pause instead of mid-gesture. Pure + testable.
 
 import type { ReferenceFrame } from './types'
+import type { Tempo } from '../audio/beats'
 
 // A dance is taught in short "moves"; every 3 consecutive moves form a "section" you learn
 // move 1 → move 2 → move 3, then run together.
@@ -121,22 +122,74 @@ function smooth(xs: number[], radius: number): number[] {
   })
 }
 
+/** Beat times (seconds) strictly inside (start, end), in order, from a detected tempo. */
+export function beatTimes(tempo: Tempo, start: number, end: number): number[] {
+  const iv = tempo.beatIntervalSec
+  if (!(iv > 0)) return []
+  const out: number[] = []
+  // First beat index whose time is > start.
+  let k = Math.ceil((start - tempo.firstBeatSec) / iv)
+  if (tempo.firstBeatSec + k * iv <= start) k++
+  for (let t = tempo.firstBeatSec + k * iv; t < end - 1e-6; t += iv) {
+    if (t > start + 1e-6) out.push(t)
+  }
+  return out
+}
+
 /**
- * Auto-detect move boundaries inside [start, end]. Targets ~`targetSec`-long moves, then
- * snaps each cut to the lowest-motion instant near it (a hold = where a move resolves).
- * Falls back to an even split when there isn't enough pose data (e.g. playback-only tracks).
+ * Beat-aligned move boundaries: dance moves resolve on the count, so cuts are placed on
+ * the beat grid every ~`beatsPerSeg` beats, then nudged to the QUIETEST beat in a small
+ * neighbourhood (a hold = where a move actually lands). Musical and motion-aware.
  */
-export function autoMoveBounds(
+function beatAlignedBounds(
   frames: ReferenceFrame[],
   start: number,
   end: number,
   targetSec: number,
+  beats: number[],
+  tempo: Tempo,
 ): number[] {
-  const span = end - start
-  if (span <= 0.05 || targetSec <= 0) return []
-  const n = Math.max(1, Math.round(span / targetSec))
-  if (n <= 1) return []
+  const beatsPerSeg = Math.max(1, Math.round(targetSec / tempo.beatIntervalSec))
+  if (beats.length <= beatsPerSeg) return [] // not even one full segment of beats
 
+  // Smoothed motion, sampled at each beat time (0 when there's no pose data — beat-only).
+  const series = motionSeries(frames, start, end)
+  const sm = smooth(series.map((s) => s.m), 2)
+  const motionAt = (t: number): number => {
+    if (series.length === 0) return 0
+    let bi = 0
+    let bd = Infinity
+    for (let i = 0; i < series.length; i++) {
+      const d = Math.abs(series[i]!.t - t)
+      if (d < bd) { bd = d; bi = i }
+    }
+    return sm[bi] ?? 0
+  }
+
+  const nudge = Math.max(1, Math.floor(beatsPerSeg / 3)) // beats to search either side
+  const minGap = tempo.beatIntervalSec * Math.max(1, beatsPerSeg - nudge)
+  const out: number[] = []
+  let last = start
+  for (let target = beatsPerSeg; target < beats.length; target += beatsPerSeg) {
+    let bestT = beats[target]!
+    let bestVal = motionAt(bestT)
+    for (let d = -nudge; d <= nudge; d++) {
+      const idx = target + d
+      if (idx <= 0 || idx >= beats.length) continue
+      const v = motionAt(beats[idx]!)
+      if (v < bestVal) { bestVal = v; bestT = beats[idx]! }
+    }
+    if (bestT >= last + minGap && bestT < end - minGap) {
+      out.push(bestT)
+      last = bestT
+    }
+  }
+  return out
+}
+
+/** Motion-only fallback (no tempo): even targets nudged onto nearby low-motion instants. */
+function motionMoveBounds(frames: ReferenceFrame[], start: number, end: number, n: number): number[] {
+  const span = end - start
   const even: number[] = []
   for (let k = 1; k < n; k++) even.push(start + (k * span) / n)
 
@@ -145,27 +198,19 @@ export function autoMoveBounds(
 
   const sm = smooth(series.map((s) => s.m), 2)
   const sliceLen = span / n
-  // Search a bounded window around each target so the cut lands on a *nearby* pause and
-  // chunks stay close to the requested length (a wide window can snap to a far-off hold).
   const window = Math.min(sliceLen * 0.45, 2.5)
   const minGap = sliceLen * 0.4
 
   const out: number[] = []
   let last = start
   for (const target of even) {
-    // Nearest low-motion instant within ±window of the even target.
     let bestT = target
     let bestVal = Infinity
     for (let i = 0; i < series.length; i++) {
       const t = series[i]!.t
       if (t < target - window || t > target + window) continue
-      if (sm[i]! < bestVal) {
-        bestVal = sm[i]!
-        bestT = t
-      }
+      if (sm[i]! < bestVal) { bestVal = sm[i]!; bestT = t }
     }
-    // Keep cuts spaced out and inside the range; nudge rather than drop so the move
-    // count stays close to what the user asked for.
     let t = bestT
     if (t < last + minGap) t = Math.min(target, end - minGap)
     if (t < last + minGap || t > end - minGap) continue
@@ -173,4 +218,32 @@ export function autoMoveBounds(
     last = t
   }
   return out.length ? out : even
+}
+
+/**
+ * Auto-detect move boundaries inside [start, end]. When the song's tempo is known, cuts
+ * are aligned to the beat grid (~`targetSec` per move) and snapped to the quietest nearby
+ * beat — musical and accurate. Without a tempo it falls back to motion-dip detection, and
+ * without pose data (e.g. playback-only) to an even split.
+ */
+export function autoMoveBounds(
+  frames: ReferenceFrame[],
+  start: number,
+  end: number,
+  targetSec: number,
+  tempo?: Tempo,
+): number[] {
+  const span = end - start
+  if (span <= 0.05 || targetSec <= 0) return []
+  const n = Math.max(1, Math.round(span / targetSec))
+  if (n <= 1) return []
+
+  if (tempo && tempo.bpm > 0 && tempo.beatIntervalSec > 0) {
+    const beats = beatTimes(tempo, start, end)
+    if (beats.length >= 4) {
+      const aligned = beatAlignedBounds(frames, start, end, targetSec, beats, tempo)
+      if (aligned.length) return aligned
+    }
+  }
+  return motionMoveBounds(frames, start, end, n)
 }

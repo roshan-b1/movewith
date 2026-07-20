@@ -989,7 +989,7 @@ export function Practice() {
   // them evenly. Clears progress since the moves changed.
   function segmentInto(s: number, e: number, mode: 'auto' | 'even') {
     const bounds = mode === 'auto'
-      ? autoMoveBounds(trackRef.current.frames, s, e, moveSec)
+      ? autoMoveBounds(trackRef.current.frames, s, e, moveSec, trackRef.current.tempo)
       : evenMoveBounds(s, e, moveSec)
     setMoveBounds(bounds)
     setCompleted([]); completedRef.current = []; setSkip([])

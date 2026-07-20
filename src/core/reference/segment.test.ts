@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { evenMoveBounds, autoMoveBounds } from './segment'
+import { evenMoveBounds, autoMoveBounds, beatTimes } from './segment'
+import { makeTempo } from '../audio/beats'
 import type { ReferenceFrame } from './types'
 
 // A frame carrying a single fake joint angle; the rest is unused by segmentation.
@@ -60,5 +61,56 @@ describe('autoMoveBounds', () => {
     }
     const sorted = bounds.slice().sort((a, b) => a - b)
     expect(bounds).toEqual(sorted)
+  })
+})
+
+describe('beatTimes', () => {
+  it('lists the beats strictly inside a range', () => {
+    // 120 BPM = 0.5s per beat, first beat at 0. Beats inside (1, 3): 1.5, 2.0, 2.5.
+    const ts = beatTimes(makeTempo(120, 0), 1, 3)
+    expect(ts).toEqual([1.5, 2, 2.5])
+  })
+  it('honours a first-beat offset (grid extends both ways)', () => {
+    // 0.2s/beat, first detected beat at 0.3. The grid is periodic, so 0.1 (0.3 - 0.2) is
+    // also a beat; beats inside (0,1) are 0.1, 0.3, 0.5, 0.7, 0.9.
+    const ts = beatTimes(makeTempo(300, 0.3), 0, 1).map((t) => +t.toFixed(2))
+    expect(ts).toEqual([0.1, 0.3, 0.5, 0.7, 0.9])
+  })
+})
+
+describe('autoMoveBounds — beat-aligned', () => {
+  const tempo = makeTempo(120, 0) // 0.5s/beat
+
+  it('places every cut exactly on a beat', () => {
+    // 24s at 120bpm, ~4s moves → 8 beats/segment. Cuts must be multiples of 0.5s.
+    const fs = frames(24, 0.1, (t) => 50 + 30 * Math.sin(t * 6))
+    const bounds = autoMoveBounds(fs, 0, 24, 4, tempo)
+    expect(bounds.length).toBeGreaterThanOrEqual(4)
+    for (const b of bounds) expect(Math.round(b / 0.5) * 0.5).toBeCloseTo(b, 6)
+  })
+
+  it('spaces segments to about the target length', () => {
+    const fs = frames(24, 0.1, () => 50)
+    const bounds = autoMoveBounds(fs, 0, 24, 4, tempo) // ~4s → 8 beats apart = 4s
+    const cuts = [0, ...bounds, 24]
+    for (let i = 1; i < cuts.length; i++) {
+      const len = cuts[i]! - cuts[i - 1]!
+      expect(len).toBeGreaterThan(2.5)
+      expect(len).toBeLessThan(5.5)
+    }
+  })
+
+  it('nudges a boundary onto the quietest nearby beat (a hold)', () => {
+    // 8 beats/seg → first boundary near beat 8 (t=4). Make beat 7 (t=3.5) a dead hold
+    // while everything else moves; the cut should snap back to 3.5, not sit at 4.0.
+    const fs = frames(24, 0.1, (t) => (t > 3.35 && t < 3.65 ? 50 : 50 + 40 * Math.sin(t * 25)))
+    const bounds = autoMoveBounds(fs, 0, 24, 4, tempo)
+    expect(bounds[0]!).toBeCloseTo(3.5, 6)
+  })
+
+  it('works beat-only for playback tracks (tempo but no frames)', () => {
+    const bounds = autoMoveBounds([], 0, 24, 4, tempo)
+    expect(bounds.length).toBeGreaterThanOrEqual(4)
+    for (const b of bounds) expect(Math.round(b / 0.5) * 0.5).toBeCloseTo(b, 6)
   })
 })
