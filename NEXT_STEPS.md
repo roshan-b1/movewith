@@ -5,9 +5,11 @@ deliberate "do later" so the current app stays focused.
 
 ## Practice / learning flow
 
-- **Proper segment auto-generation.** Today's "Auto-detect" is a rough heuristic (it cuts on
-  motion lows / pauses). Build a real segmenter that places boundaries on actual move/step
-  transitions. The manual segment creator (tap to place cuts) stays the primary path.
+- **Smarter segment auto-generation.** Auto-detect now aligns cuts to the song's beat grid
+  (~target length in beats) and snaps each to the quietest nearby beat — musical and much
+  better than the old even-spacing. Next level: recognize the actual move/step in each segment
+  (see below) so boundaries land on real step transitions, not just quiet beats. The manual
+  segment creator (tap to place cuts) stays the primary path.
 - **Thorough step-direction detection.** Recognize the actual dance step in each segment, not
   just split by time. Feeds the auto-generation above.
 - **Auto-detect dancing vs talking.** Find the dance parts of a tutorial automatically and a
