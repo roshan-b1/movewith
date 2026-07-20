@@ -120,7 +120,7 @@ export function Library() {
             {
               n: '3',
               t: 'Each move loops, hands-free',
-              d: 'No more slowing the video down and jabbing play, pause, rewind. Every segment repeats on its own, at half speed and mirrored so it is easy to follow, until the move clicks.',
+              d: 'No more slowing the video down and jabbing play, pause, rewind. Every segment repeats on its own, as slow as you want and mirrored so it is easy to follow, until the move clicks.',
             },
             {
               n: '4',
