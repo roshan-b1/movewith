@@ -63,9 +63,9 @@ export function Library() {
           <span className="text-gradient italic">move by move.</span>
         </h1>
         <p className="mt-5 max-w-xl text-lg leading-relaxed text-ink/60">
-          Drop in any dance video and it splits into short moves. Each one loops on its own,
-          slowed down and mirrored, so you learn without ever touching play, pause, or rewind.
-          When you are ready, test yourself on camera. It all runs on your device.
+          Upload a dance tutorial and cut it into short moves. Each one loops on its own, slowed
+          down and mirrored, so you learn one move at a time without ever touching play, pause, or
+          rewind. When you have got it, test yourself on camera. It all runs on your device.
         </p>
       </header>
 
@@ -114,8 +114,8 @@ export function Library() {
             },
             {
               n: '2',
-              t: 'It splits into moves',
-              d: 'The dance is cut into short segments you learn one at a time, instead of scrubbing back and forth through one long video.',
+              t: 'You cut it into moves',
+              d: 'Play it through once and tap where each move ends (or let it auto-detect). Short segments you learn one at a time beat scrubbing one long video.',
             },
             {
               n: '3',
