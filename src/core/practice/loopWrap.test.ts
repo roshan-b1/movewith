@@ -15,10 +15,10 @@ describe('loopWrapAction', () => {
     expect(loopWrapAction({ ...base, segMode: 'replay' })).toBe('hold')
   })
 
-  it('ends the final practice pass instead of looping it', () => {
-    expect(loopWrapAction({ ...base, segMode: 'runthrough' })).toBe('finishRun')
-    // Even with reps configured: the run-through is one pass, not a drill.
-    expect(loopWrapAction({ ...base, segMode: 'runthrough', repLimit: 5 })).toBe('finishRun')
+  it('keeps the full run-through cycling until the dancer says Got it', () => {
+    expect(loopWrapAction({ ...base, segMode: 'runthrough' })).toBe('repeat')
+    // A rep limit belongs to segment drilling; it must not cut the run-through short.
+    expect(loopWrapAction({ ...base, segMode: 'runthrough', repLimit: 1, repsSoFar: 9 })).toBe('repeat')
   })
 
   it('loops forever while drilling with no rep limit', () => {

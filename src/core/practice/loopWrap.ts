@@ -4,15 +4,13 @@
 // final practice pass is over, and plain drilling should just loop again (until the rep
 // limit). Pure so the branching is testable — the live tick can't be, it needs playback.
 
-export type WrapMode = 'watch' | 'runthrough' | 'rundone' | 'menu' | 'test' | 'results' | 'summary' | 'replay'
+export type WrapMode = 'watch' | 'runthrough' | 'menu' | 'test' | 'results' | 'summary' | 'replay'
 
 export type WrapAction =
   /** A recorded take played once through: grade it. */
   | 'finishTake'
   /** Side-by-side replay: stop at the end and wait for ▶ Replay. */
   | 'hold'
-  /** The final full pass is done: ask whether they got it. */
-  | 'finishRun'
   /** Drilling: wait the break, then run the segment again. */
   | 'repeat'
   /** Drilling: the requested number of reps is done. */
@@ -32,7 +30,9 @@ export interface WrapState {
 export function loopWrapAction(s: WrapState): WrapAction {
   if (s.takeActive) return 'finishTake'
   if (s.segMode === 'replay') return 'hold'
-  if (s.segMode === 'runthrough') return 'finishRun'
+  // The full run-through keeps cycling until the dancer says they've got it — a pass
+  // ending is never "done", so a rep limit doesn't apply to it either.
+  if (s.segMode === 'runthrough') return 'repeat'
   const done = s.repsSoFar + 1
   return s.repLimit !== Infinity && done >= s.repLimit ? 'repsDone' : 'repeat'
 }

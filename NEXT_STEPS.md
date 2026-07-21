@@ -28,10 +28,12 @@ deliberate "do later" so the current app stays focused.
   pre-skips those segments with an undo toast. Validated: an all-dance real video gets zero
   false positives. Future: a "jump straight to the dancing" control on first open.
 - **Smarter segment drilling — MOSTLY BUILT.** Practice ends with a camera-free full
-  run-through (Got it hands off to Test my skills, or keep drilling), and Test my skills is
-  one continuous pass of the whole dance to the music, sliced back up by instructor time for
-  a part-by-part recap. Still future: graded slow-down across the run (start at 0.5x and
-  work up automatically).
+  run-through that LOOPS (with speed + mirror) until you tap Got it, which hands off to Test
+  my skills. Combo practice loops 2 or 3 consecutive segments together so the join between
+  moves gets rehearsed, and Got it marks the whole combo. Test my skills is one continuous
+  pass of the whole dance to the music, sliced back up by instructor time for a part-by-part
+  recap. Still future: graded slow-down across the run (start at 0.5x and work up
+  automatically), and combos that span a chosen range rather than N-consecutive.
 
 ## Content / modes
 
