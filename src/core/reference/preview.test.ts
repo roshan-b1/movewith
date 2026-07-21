@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { dancerBoundsAt, pickShowcaseTime } from './preview'
+import { dancerBoundsAt, dancerPortraitAt, pickShowcaseTime } from './preview'
 import type { ReferenceFrame } from './types'
-import type { Landmark } from '../pose/types'
+import { LM, type Landmark } from '../pose/types'
 
 /** A person filling x in [cx-0.05, cx+0.05], y in [0.3, 0.7]. */
 function frame(t: number, cx: number, visible = true): ReferenceFrame {
@@ -48,6 +48,55 @@ describe('dancerBoundsAt', () => {
     expect(dancerBoundsAt(dancer(0.5, 0, 10, false), 5)).toBeNull()
     const noImage: ReferenceFrame[] = [{ t: 5, world: [], angles: [90], visibility: [1] }]
     expect(dancerBoundsAt(noImage, 5)).toBeNull()
+  })
+})
+
+/** A full-body person: head near the top, arms flung out wide, feet at the bottom. */
+function bodyFrame(t: number, cx: number, armSpan: number): ReferenceFrame {
+  const image: Landmark[] = Array.from({ length: 33 }, () => ({ x: cx, y: 0.5, z: 0, visibility: 1 }))
+  const put = (i: number, x: number, y: number) => { image[i] = { x, y, z: 0, visibility: 1 } }
+  put(LM.nose, cx, 0.16)
+  put(LM.leftEye, cx - 0.012, 0.15); put(LM.rightEye, cx + 0.012, 0.15)
+  put(LM.leftEar, cx - 0.025, 0.155); put(LM.rightEar, cx + 0.025, 0.155)
+  put(LM.leftShoulder, cx - 0.05, 0.26); put(LM.rightShoulder, cx + 0.05, 0.26)
+  put(LM.leftHip, cx - 0.04, 0.55); put(LM.rightHip, cx + 0.04, 0.55)
+  put(LM.leftWrist, cx - armSpan, 0.30); put(LM.rightWrist, cx + armSpan, 0.30)
+  put(LM.leftAnkle, cx - 0.04, 0.95); put(LM.rightAnkle, cx + 0.04, 0.95)
+  return { t, world: [], image, angles: [90], visibility: [1] }
+}
+
+describe('dancerPortraitAt', () => {
+  const left = [bodyFrame(5, 0.35, 0.22)]
+  const right = [bodyFrame(5, 0.62, 0.22)]
+
+  it('frames head and torso, not the legs', () => {
+    const b = dancerPortraitAt(left, 5)!
+    expect(b.y).toBeLessThan(0.16) // headroom above the face
+    expect(b.y + b.h).toBeLessThan(0.75) // stops well above the ankles
+  })
+
+  it('stays narrower than the full body so a neighbour is not dragged in', () => {
+    const portrait = dancerPortraitAt(left, 5)!
+    const full = dancerBoundsAt(left, 5)!
+    expect(portrait.w).toBeLessThan(full.w)
+  })
+
+  it('keeps two side-by-side dancers in separate boxes', () => {
+    // The bug this guards: crops that grow sideways until both show the same pair.
+    const a = dancerPortraitAt(left, 5)!
+    const b = dancerPortraitAt(right, 5)!
+    expect(a.x + a.w).toBeLessThanOrEqual(b.x + 1e-9) // no horizontal overlap at all
+  })
+
+  it('falls back to the full body when the face is not tracked', () => {
+    const hidden: ReferenceFrame[] = [{
+      ...bodyFrame(5, 0.5, 0.2),
+      image: bodyFrame(5, 0.5, 0.2).image!.map((lm, i) =>
+        i <= LM.mouthRight ? { ...lm, visibility: 0 } : lm),
+    }]
+    // Shoulders + hips alone are still 4 points, so it frames those rather than giving up.
+    expect(dancerPortraitAt(hidden, 5)).not.toBeNull()
+    expect(dancerPortraitAt([], 5)).toBeNull()
   })
 })
 

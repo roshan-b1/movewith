@@ -5,6 +5,7 @@
 
 import type { ReferenceFrame } from './types'
 import { nearestFrameIndex } from './build'
+import { LM } from '../pose/types'
 
 export interface Box {
   /** All normalized 0..1 of the video frame. */
@@ -53,6 +54,59 @@ export function dancerBoundsAt(frames: ReferenceFrame[], t: number, pad = 0.15):
     y,
     w: Math.min(1 - x, maxX - minX + px * 2),
     h: Math.min(1 - y, maxY - minY + py * 2),
+  }
+}
+
+/** Head + torso landmarks: what actually makes someone recognizable in a small chip. */
+const PORTRAIT_POINTS: readonly number[] = [
+  LM.nose, LM.leftEye, LM.rightEye, LM.leftEar, LM.rightEar,
+  LM.leftShoulder, LM.rightShoulder, LM.leftHip, LM.rightHip,
+]
+
+/**
+ * A head-and-torso box for a dancer at time `t`. Preferred over the full-body box for the
+ * picker: at chip size a whole body is unidentifiable, and — the real problem — a full body
+ * with arms out is wide enough that cropping it drags in whoever is standing next to them.
+ * Falls back to the full body when the head/torso isn't tracked.
+ */
+export function dancerPortraitAt(frames: ReferenceFrame[], t: number): Box | null {
+  const i = nearestFrameIndex(frames, t)
+  if (i < 0) return null
+  const f = frames[i]!
+  if (Math.abs(f.t - t) > NEAR_SEC || !f.image) return null
+
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  let seen = 0
+  for (const p of PORTRAIT_POINTS) {
+    const lm = f.image[p]
+    if (!lm || (lm.visibility ?? 1) < MIN_VIS) continue
+    seen++
+    if (lm.x < minX) minX = lm.x
+    if (lm.x > maxX) maxX = lm.x
+    if (lm.y < minY) minY = lm.y
+    if (lm.y > maxY) maxY = lm.y
+  }
+  // Need at least a shoulder line plus something above it to frame a portrait.
+  if (seen < 4 || !Number.isFinite(minX) || maxX <= minX || maxY <= minY) {
+    return dancerBoundsAt(frames, t)
+  }
+
+  const w = maxX - minX
+  const h = maxY - minY
+  // Extra headroom above (hair sits above the eyes/ears) and a little breathing room around.
+  const padX = w * 0.18
+  const padTop = h * 0.35
+  const padBottom = h * 0.08
+  const x = Math.max(0, minX - padX)
+  const y = Math.max(0, minY - padTop)
+  return {
+    x,
+    y,
+    w: Math.min(1 - x, w + padX * 2),
+    h: Math.min(1 - y, h + padTop + padBottom),
   }
 }
 

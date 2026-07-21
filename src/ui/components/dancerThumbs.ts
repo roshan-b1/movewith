@@ -3,7 +3,7 @@
 // throwaway <video> so the one on screen never moves — the picker must not disturb the
 // playhead the dancer left it at.
 
-import { dancerBoundsAt, pickShowcaseTime } from '../../core/reference/preview'
+import { dancerPortraitAt, pickShowcaseTime } from '../../core/reference/preview'
 import type { ReferenceFrame } from '../../core/reference/types'
 
 const THUMB_W = 132
@@ -11,26 +11,15 @@ const THUMB_H = 168
 
 /** Crop one dancer out of an already-seeked video frame. Null when they aren't on screen. */
 function cropDancer(video: HTMLVideoElement, frames: ReferenceFrame[], t: number): string | null {
-  const box = dancerBoundsAt(frames, t)
+  const box = dancerPortraitAt(frames, t)
   const vw = video.videoWidth
   const vh = video.videoHeight
   if (!box || !vw || !vh) return null
 
-  // Match the thumbnail's aspect so bodies aren't squashed: widen the crop if needed.
-  const want = THUMB_W / THUMB_H
-  let sw = box.w * vw
-  let sh = box.h * vh
-  let sx = box.x * vw
-  let sy = box.y * vh
-  if (sw / sh < want) {
-    const grow = sh * want - sw
-    sx = Math.max(0, sx - grow / 2)
-    sw = Math.min(vw - sx, sw + grow)
-  } else {
-    const grow = sw / want - sh
-    sy = Math.max(0, sy - grow / 2)
-    sh = Math.min(vh - sy, sh + grow)
-  }
+  const sx = box.x * vw
+  const sy = box.y * vh
+  const sw = box.w * vw
+  const sh = box.h * vh
 
   const canvas = document.createElement('canvas')
   canvas.width = THUMB_W
@@ -38,7 +27,15 @@ function cropDancer(video: HTMLVideoElement, frames: ReferenceFrame[], t: number
   const ctx = canvas.getContext('2d')
   if (!ctx) return null
   try {
-    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, THUMB_W, THUMB_H)
+    // FIT the person inside the chip (letterbox), never widen the source rect to fill it.
+    // Widening is what made two dancers standing side by side crop to the same picture:
+    // each crop grew sideways until it swallowed the neighbour.
+    const scale = Math.min(THUMB_W / sw, THUMB_H / sh)
+    const dw = sw * scale
+    const dh = sh * scale
+    ctx.fillStyle = '#12121c'
+    ctx.fillRect(0, 0, THUMB_W, THUMB_H)
+    ctx.drawImage(video, sx, sy, sw, sh, (THUMB_W - dw) / 2, (THUMB_H - dh) / 2, dw, dh)
     return canvas.toDataURL('image/jpeg', 0.8)
   } catch {
     return null // tainted or not decodable — the picker falls back to color dots

@@ -189,6 +189,11 @@ export function Practice() {
   const moves = useMemo(() => buildMovesFromBounds(trimStart, trimEnd, moveBounds), [trimStart, trimEnd, moveBounds])
   const ticks = useMemo(() => moveTicks(moves), [moves])
 
+  // Nobody picked yet: the rater can't start, but the chips stay freely toggleable so you
+  // can always swap who you're being graded against.
+  const multiDancer = (track.dancers?.length ?? 0) > 1
+  const noDancerPicked = multiDancer && testDancers.length === 0
+
   // The tracked "slots" for Test my skills: the chosen reference dancers ordered as they
   // appear on screen (left → right), so a group just stands the way the video looks.
   const slotInfo = useMemo(() => {
@@ -1550,14 +1555,14 @@ export function Practice() {
                         <button
                           key={i}
                           onClick={() => {
-                            setTestDancers((cur) => {
-                              const next = cur.includes(i)
-                                ? cur.length > 1 ? cur.filter((x) => x !== i) : cur // keep at least one
-                                : [...cur, i]
-                              // A solo pick also becomes the practice dancer, like before.
-                              if (next.length === 1) void selectDancer(next[0]!)
-                              return next
-                            })
+                            // Free toggling, including down to none — starting is gated on
+                            // the selection instead, so nobody gets stuck unable to swap.
+                            const next = testDancers.includes(i)
+                              ? testDancers.filter((x) => x !== i)
+                              : [...testDancers, i]
+                            setTestDancers(next)
+                            // A solo pick also becomes the practice dancer, like before.
+                            if (next.length === 1) void selectDancer(next[0]!)
                             const pb = playbackRef.current
                             if (pb) pb.seek(pb.getTime())
                           }}
@@ -1580,17 +1585,23 @@ export function Practice() {
                       )
                     })}
                   </div>
-                  <p className="mt-2 text-xs text-ink/45">
-                    Solo? Keep one picked. Dancing with friends? Pick a dancer for each of you,
-                    then stand the way the video looks · everyone gets scored against their own dancer.
-                  </p>
+                  {noDancerPicked ? (
+                    <p className="mt-2 text-xs font-semibold text-warn">
+                      Pick at least one dancer to continue.
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-xs text-ink/45">
+                      Solo? Keep one picked. Dancing with friends? Pick a dancer for each of you,
+                      then stand the way the video looks · everyone gets scored against their own dancer.
+                    </p>
+                  )}
                 </div>
               )}
               {/* Starting is gated on the camera + pose model being warm — otherwise the
                   first seconds of the take have no tracking and score as "couldn't see you". */}
               <button
                 onClick={startWholeDanceRun}
-                disabled={camStatus !== 'ready'}
+                disabled={camStatus !== 'ready' || noDancerPicked}
                 className="mt-4 w-full rounded-2xl bg-brand2 px-5 py-3 text-left font-display text-base font-bold text-[#06222a] shadow-soft transition hover:brightness-105 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
               >
                 ▶ Dance the whole thing
@@ -1604,7 +1615,7 @@ export function Practice() {
                   <button
                     key={m.index}
                     onClick={() => startRating(m.startSec, m.endSec)}
-                    disabled={camStatus !== 'ready'}
+                    disabled={camStatus !== 'ready' || noDancerPicked}
                     className="rounded-xl border border-line bg-ink/[0.06] px-4 py-2 text-sm font-semibold text-ink/80 transition hover:border-brand2/60 hover:text-ink active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {m.index + 1}
