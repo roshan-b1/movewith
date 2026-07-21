@@ -201,15 +201,21 @@ function beatAlignedBounds(
 // spans ~one target segment, so each cut opens a new short phrase (a few moves), not a
 // single gesture, and repeats within that span are absorbed rather than chopped.
 
-const MAX_SAMPLES = 200 // cap the O(n²) similarity matrix; plenty of detail for a clip
+const MAX_SAMPLES = 600 // cap the O(n²) similarity matrix; ~3 samples/sec even on a 3-min video
 const CONTRAST_FLOOR = 0.07 // min before/after pose contrast (0..1) to call it a real change
+// A joint re-doing the same move lands within a few degrees of last time (execution jitter);
+// a genuinely different move swings joints by tens of degrees. Flooring the distance scale
+// here keeps jitter from being inflated into fake "novelty" on repetitive/held stretches.
+const MIN_DISTINCT_DEG = 15
 
 interface PoseSamples {
   times: number[]
-  feats: number[][] // per-sample standardized joint-angle vector
+  feats: number[][] // per-sample joint-angle vector (degrees)
 }
 
-/** Uniformly resample the window's joint-angle vectors (standardized per dimension). */
+/** Uniformly resample the window's joint-angle vectors. Kept in raw degrees — all joints
+ *  share the unit, and absolute scale is what separates jitter from a real move (see
+ *  MIN_DISTINCT_DEG). Standardizing per joint would inflate noise on repetitive stretches. */
 function samplePoses(frames: ReferenceFrame[], start: number, end: number): PoseSamples | null {
   const win = frames.filter((f) => f.t >= start && f.t <= end)
   if (win.length < 8) return null
@@ -229,23 +235,17 @@ function samplePoses(frames: ReferenceFrame[], start: number, end: number): Pose
     times.push(f.t)
     feats.push(f.angles.slice(0, dims))
   }
-  // Standardize each angle dimension so all joints weigh in comparably.
-  for (let d = 0; d < dims; d++) {
-    let mean = 0
-    for (const v of feats) mean += v[d]!
-    mean /= feats.length
-    let varr = 0
-    for (const v of feats) varr += (v[d]! - mean) ** 2
-    const sd = Math.sqrt(varr / feats.length)
-    for (const v of feats) v[d] = sd > 1e-6 ? (v[d]! - mean) / sd : 0
-  }
   return { times, feats }
 }
 
 /** Symmetric pose-similarity matrix in (0,1]; 1 = identical pose. */
 function similarityMatrix(feats: number[][]): number[][] {
   const n = feats.length
-  // Scale distances by the average squared distance so contrast is data-relative.
+  const dims = feats[0]?.length ?? 0
+  // Scale distances by the average squared distance so contrast is data-relative — but
+  // floored at "a genuinely different move" size. Without the floor, a video where the body
+  // only jitters in place (a hold or a repeated move) would have its noise stretched into
+  // fake structure and get cut anyway.
   let sum = 0
   let cnt = 0
   for (let i = 0; i < n; i++) {
@@ -258,7 +258,7 @@ function similarityMatrix(feats: number[][]): number[][] {
       cnt++
     }
   }
-  const scale = Math.max(sum / Math.max(cnt, 1), 1e-6)
+  const scale = Math.max(sum / Math.max(cnt, 1), dims * MIN_DISTINCT_DEG * MIN_DISTINCT_DEG)
   const S: number[][] = Array.from({ length: n }, () => new Array(n).fill(1))
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {

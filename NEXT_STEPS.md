@@ -12,8 +12,9 @@ deliberate "do later" so the current app stays focused.
   is known; playback-only tracks fall back to a beat/even split. Result: each segment is a
   short phrase of a few moves, not a time slice, and a move done several times isn't chopped.
   Next level: name/classify the actual step in each segment (below). The manual segment creator
-  (tap to place cuts) stays the primary path. Tuning knob: `CONTRAST_FLOOR` in `segment.ts`
-  (raise = fewer/coarser cuts, lower = more sensitive) — worth revisiting against real footage.
+  (tap to place cuts) stays the primary path. Tuning knobs in `segment.ts`: `CONTRAST_FLOOR`
+  (raise = fewer/coarser cuts) and `MIN_DISTINCT_DEG` (how many degrees of joint movement
+  separate "same move, jittered" from "new move") — worth revisiting against real footage.
 - **Thorough step-direction detection.** Recognize/label the actual dance step in each segment
   (which move it is, its direction), not just detect where it changes. Builds on the novelty
   boundaries above.

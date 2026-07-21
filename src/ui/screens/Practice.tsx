@@ -1385,9 +1385,12 @@ export function Practice() {
                   <p className="mt-2 text-xs text-ink/45">The skeletons on the video match these colors · your pick is the bold one.</p>
                 </div>
               )}
+              {/* Starting is gated on the camera + pose model being warm — otherwise the
+                  first seconds of the take have no tracking and score as "couldn't see you". */}
               <button
                 onClick={startRunThrough}
-                className="mt-4 w-full rounded-2xl bg-brand2 px-5 py-3 text-left font-display text-base font-bold text-[#06222a] shadow-soft transition hover:brightness-105 active:scale-[0.99]"
+                disabled={camStatus !== 'ready'}
+                className="mt-4 w-full rounded-2xl bg-brand2 px-5 py-3 text-left font-display text-base font-bold text-[#06222a] shadow-soft transition hover:brightness-105 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
               >
                 ▶ Full run-through · recommended
                 <span className="block text-xs font-medium text-[#06222a]/70">
@@ -1400,7 +1403,8 @@ export function Practice() {
                   <button
                     key={m.index}
                     onClick={() => { raterQueueRef.current = []; startRating(m.startSec, m.endSec) }}
-                    className="rounded-xl border border-line bg-ink/[0.06] px-4 py-2 text-sm font-semibold text-ink/80 transition hover:border-brand2/60 hover:text-ink active:scale-95"
+                    disabled={camStatus !== 'ready'}
+                    className="rounded-xl border border-line bg-ink/[0.06] px-4 py-2 text-sm font-semibold text-ink/80 transition hover:border-brand2/60 hover:text-ink active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {m.index + 1}
                   </button>

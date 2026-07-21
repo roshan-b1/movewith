@@ -36,8 +36,8 @@ describe('autoMoveBounds', () => {
   })
 
   it('cuts where the movement changes into a new phrase', () => {
-    // Two 8s phrases with different pose content → one cut at the change (~t=8).
-    const fs = frames(16, 0.1, (t) => (t < 8 ? 0 : 1))
+    // Two 8s phrases with genuinely different poses (arms swing ~80°) → one cut (~t=8).
+    const fs = frames(16, 0.1, (t) => (t < 8 ? 20 : 100))
     const bounds = autoMoveBounds(fs, 0, 16, 8)
     expect(bounds).toHaveLength(1)
     expect(bounds[0]!).toBeGreaterThan(6.5)
@@ -45,14 +45,20 @@ describe('autoMoveBounds', () => {
   })
 
   it('leaves a repeated move whole (no cut inside a repeat)', () => {
-    // A short motion repeated the whole time (period 2s ≪ target) is one phrase → no cut.
-    const fs = frames(16, 0.1, (t) => (Math.floor(t) % 2 === 0 ? 0 : 1))
+    // A big motion repeated the whole time (period 2s ≪ target) is one phrase → no cut.
+    const fs = frames(16, 0.1, (t) => (Math.floor(t) % 2 === 0 ? 20 : 100))
     expect(autoMoveBounds(fs, 0, 16, 8)).toEqual([])
+  })
+
+  it('treats execution jitter as the same move, not a phrase change', () => {
+    // One held pose with a few degrees of wobble — a repeat, never a cut, even over 60s.
+    const fs = frames(60, 0.2, (t) => 90 + 3 * Math.sin(t * 13.7) + 2 * Math.sin(t * 5.1))
+    expect(autoMoveBounds(fs, 0, 60, 8)).toEqual([])
   })
 
   it('cuts each distinct phrase in a three-phrase clip', () => {
     // Three different 8s phrases → cuts at both changes (~8, ~16).
-    const fs = frames(24, 0.1, (t) => (t < 8 ? 0 : t < 16 ? 1 : 2))
+    const fs = frames(24, 0.1, (t) => (t < 8 ? 20 : t < 16 ? 100 : 170))
     const bounds = autoMoveBounds(fs, 0, 24, 8)
     expect(bounds).toHaveLength(2)
     expect(bounds[0]!).toBeGreaterThan(6.5)
@@ -62,7 +68,7 @@ describe('autoMoveBounds', () => {
   })
 
   it('keeps cuts strictly inside the range and increasing', () => {
-    const fs = frames(24, 0.1, (t) => (t < 8 ? 0 : t < 16 ? 1 : 2))
+    const fs = frames(24, 0.1, (t) => (t < 8 ? 20 : t < 16 ? 100 : 170))
     const bounds = autoMoveBounds(fs, 0, 24, 8)
     for (const b of bounds) {
       expect(b).toBeGreaterThan(0)
@@ -87,12 +93,46 @@ describe('beatTimes', () => {
   })
 })
 
+// A full-length tutorial: `phraseCount` distinct 15s phrases at pose-extractor rate (5fps),
+// each pose held with deterministic execution jitter. Exercises the detector at the scale of
+// a real 3-minute upload, where noise once masqueraded as novelty.
+function longDance(phraseCount: number, phraseSec: number, dt = 0.2): ReferenceFrame[] {
+  const out: ReferenceFrame[] = []
+  let seed = 7
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed / 0x7fffffff - 0.5) * 6 }
+  const poses: number[][] = []
+  for (let p = 0; p < phraseCount; p++) {
+    poses.push(Array.from({ length: 12 }, (_, i) => 90 + 70 * Math.sin(p * 2.7 + i * 1.3)))
+  }
+  for (let t = 0; t < phraseCount * phraseSec; t += dt) {
+    const p = Math.min(phraseCount - 1, Math.floor(t / phraseSec))
+    out.push({ t: +t.toFixed(2), world: [], angles: poses[p]!.map((a) => a + rnd()), visibility: poses[p]!.map(() => 1) })
+  }
+  return out
+}
+
+describe('autoMoveBounds — full-length tutorial', () => {
+  it('finds every phrase change in a 3-minute video, on the beat, with no spurious cuts', () => {
+    const fs = longDance(12, 15) // 180s, changes at 15, 30, …, 165
+    const bounds = autoMoveBounds(fs, 0, 180, 8, makeTempo(120, 0))
+    const trueCuts = Array.from({ length: 11 }, (_, i) => (i + 1) * 15)
+    for (const tc of trueCuts) expect(bounds.some((b) => Math.abs(b - tc) < 2)).toBe(true)
+    expect(bounds.length).toBeLessThanOrEqual(13) // at most a couple beyond the true 11
+    for (const b of bounds) expect(Math.round(b / 0.5) * 0.5).toBeCloseTo(b, 6)
+  })
+
+  it('a 3-minute repetitive video stays one segment (jitter is not novelty)', () => {
+    const fs = longDance(1, 180) // one move the whole time
+    expect(autoMoveBounds(fs, 0, 180, 8, makeTempo(120, 0))).toEqual([])
+  })
+})
+
 describe('autoMoveBounds — beat alignment', () => {
   const tempo = makeTempo(120, 0) // 0.5s/beat
 
   it('snaps a detected phrase change onto the beat grid', () => {
     // Two phrases change at ~t=12; with a tempo the cut lands on a beat (multiple of 0.5).
-    const fs = frames(24, 0.1, (t) => (t < 12 ? 0 : 1))
+    const fs = frames(24, 0.1, (t) => (t < 12 ? 20 : 100))
     const bounds = autoMoveBounds(fs, 0, 24, 8, tempo)
     expect(bounds).toHaveLength(1)
     expect(Math.round(bounds[0]! / 0.5) * 0.5).toBeCloseTo(bounds[0]!, 6)
