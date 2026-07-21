@@ -68,8 +68,12 @@ deliberate "do later" so the current app stays focused.
 
 ## Platform / infra
 
-- **Pick a character.** Multi-dancer select when a tutorial has more than one person
-  (MediaPipe `numPoses` > 1 + click-to-track).
+- **Pick a character — BUILT (and now multi-select).** Multi-dancer videos let you tap ONE
+  dancer (solo) or SEVERAL in "Test my skills", so a group can dance together: the live
+  webcam tracks up to 4 people, each matched to their chosen reference dancer by on-screen
+  position (left → right, mirrored), each scored separately with color-matched skeletons and
+  a per-dancer recap. Future: name the people instead of "Dancer 1 / Dancer 2", and handle
+  dancers who swap places mid-song (matching is positional per frame, not identity-based).
 - **Signalsmith Stretch** for studio-grade pitch-preserved slow-mo (current slow-mo uses the
   browser's native `preservesPitch`).
 - **Desktop app (Tauri)** wrapper for the smoothest playback, accounts, and cloud sharing /

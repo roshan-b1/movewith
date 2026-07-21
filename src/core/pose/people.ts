@@ -132,3 +132,39 @@ export function associatePeople(frames: DetectedFrame[], opts: AssociateOptions 
     .sort((a, b) => median(b.sizes) - median(a.sizes))
     .map((tr) => tr.frames)
 }
+
+// ---- Group "Test my skills": matching live people to chosen reference dancers ----------
+
+/**
+ * Assign detected live people to `slots` reference-dancer slots by ON-SCREEN order.
+ * The webcam preview is mirrored (like a mirror), so the person standing display-left
+ * has the LARGEST raw image x. Reference slots are ordered display-left → display-right
+ * too, so "stand the way the video looks" is the whole instruction. When more people
+ * than slots are in frame, the most prominent (largest) bodies win; missing slots come
+ * back as null. Pure.
+ */
+export function assignPeopleToSlots(people: DetectedPerson[], slots: number): (DetectedPerson | null)[] {
+  const out: (DetectedPerson | null)[] = new Array(slots).fill(null)
+  if (slots <= 0 || people.length === 0) return out
+  const usable = people
+    .map((p) => ({ p, size: torsoSize(p.image), center: torsoCenter(p.image) }))
+    .filter((x): x is { p: DetectedPerson; size: number; center: { x: number; y: number } } => x.center !== null)
+    .sort((a, b) => b.size - a.size)
+    .slice(0, slots)
+    // Mirrored display: raw x descending = display left → right.
+    .sort((a, b) => b.center.x - a.center.x)
+  usable.forEach((x, i) => { out[i] = x.p })
+  return out
+}
+
+/** Median image-space x of a person's timeline — used to order reference dancers
+ *  display-left → display-right for slot matching. Frames without image landmarks
+ *  (e.g. generated routines) are skipped. */
+export function medianX(frames: { image?: Landmark[] }[]): number {
+  const xs = frames
+    .map((f) => (f.image ? torsoCenter(f.image) : null))
+    .filter((c): c is { x: number; y: number } => c !== null)
+    .map((c) => c.x)
+    .sort((a, b) => a - b)
+  return xs.length ? xs[Math.floor(xs.length / 2)]! : 0.5
+}

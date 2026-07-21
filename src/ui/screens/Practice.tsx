@@ -4,7 +4,8 @@ import { PlaybackController } from '../../engine/playback'
 import { PracticeEngine, type ReferenceContext } from '../../engine/practiceEngine'
 import { startCamera, listVideoInputs, preferredCameraId, type CameraHandle } from '../../engine/camera'
 import { getPoseProvider } from '../../providers/instance'
-import { anglesAt, sectionAngles, nearestFrameIndex } from '../../core/reference/build'
+import { anglesAtFrames, sectionAnglesFrames, nearestFrameIndex } from '../../core/reference/build'
+import { medianX } from '../../core/pose/people'
 import { scoreSectionDetailed, summarizeRun, describeTiming, type DetailedSectionScore, type RunSummary } from '../../core/compare/score'
 import { STRICT, LOOSE, type ScoreConfig, type Limb } from '../../core/compare/similarity'
 import type { Section } from '../../core/audio/beats'
@@ -153,11 +154,16 @@ export function Practice() {
   //  - 'summary' full run-through recap (per-segment grades)
   //  - 'replay'  side-by-side: instructor + your recorded take (watch yourself back)
   const [segMode, setSegMode] = useState<'watch' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
-  const [testResult, setTestResult] = useState<DetailedSectionScore | null>(null)
-  /** Coaching line about being ahead of / behind the music (null = on time). */
-  const [testTiming, setTestTiming] = useState<string | null>(null)
+  /** Per-slot scores from the last take (one entry per tracked dancer, display order). */
+  const [testResults, setTestResults] = useState<(DetailedSectionScore | null)[]>([])
+  /** Per-slot coaching lines about being ahead of / behind the music (null = on time). */
+  const [testTimings, setTestTimings] = useState<(string | null)[]>([])
   const [testError, setTestError] = useState<string | null>(null)
   const [runSummary, setRunSummary] = useState<RunSummary | null>(null)
+  /** Group run-through recap: one RunSummary per tracked dancer (display order). */
+  const [multiRun, setMultiRun] = useState<{ dancers: number[]; summaries: RunSummary[] } | null>(null)
+  /** Which reference dancers the group is testing against (dancer indices, unordered). */
+  const [testDancers, setTestDancers] = useState<number[]>([track.activeDancer ?? 0])
   /** Object URL of the camera recording captured during the last take. */
   const [takeUrl, setTakeUrl] = useState<string | null>(null)
   // The camera owns the whole stage while the rater scores you.
@@ -182,6 +188,17 @@ export function Practice() {
     () => moves.map((m) => describeMove(track.frames, m.startSec, m.endSec)?.label ?? null),
     [moves, track],
   )
+
+  // The tracked "slots" for Test my skills: the chosen reference dancers ordered as they
+  // appear on screen (left → right), so a group just stands the way the video looks.
+  const slotInfo = useMemo(() => {
+    const ds = track.dancers
+    if (!ds || ds.length <= 1) return { dancers: [track.activeDancer ?? 0], frames: [track.frames] }
+    const chosen = testDancers.filter((i) => ds[i])
+    const picked = chosen.length ? chosen : [0]
+    const ordered = picked.slice().sort((a, b) => medianX(ds[a]!) - medianX(ds[b]!))
+    return { dancers: ordered, frames: ordered.map((i) => ds[i]!) }
+  }, [track, testDancers])
 
   // refs
   const instructorVideoRef = useRef<HTMLVideoElement | null>(null)
@@ -229,18 +246,28 @@ export function Practice() {
   const segModeRef = useRef<'watch' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
   /** True while the rater is recording a single scored pass (the segment playing once through). */
   const testActiveRef = useRef(false)
-  /** Full run-through state: the queue of segment indices to score, and the scores so far. */
+  /** Full run-through state: the queue of segment indices to score, and per-segment
+   *  scores so far — one entry per tracked dancer slot (null = that person wasn't seen). */
   const raterQueueRef = useRef<number[]>([])
   const raterPosRef = useRef(0)
-  const runScoresRef = useRef<{ index: number; score: number; worstLimb: Limb | null }[]>([])
+  const runScoresRef = useRef<{ index: number; per: ({ score: number; worstLimb: Limb | null } | null)[] }[]>([])
   const finishTestRef = useRef<() => void>(() => {})
   const cancelTestRef = useRef<() => void>(() => {})
   const recorderRef = useRef<MediaRecorder | null>(null)
+  /** Slot data mirrored into refs so the 30fps engine callback reads fresh selection. */
+  const slotFramesRef = useRef(slotInfo.frames)
+  const slotDancersRef = useRef(slotInfo.dancers)
+  const testDancersRef = useRef(testDancers)
   const takeChunksRef = useRef<Blob[]>([])
   const takeUrlRef = useRef<string | null>(null)
   const takeVideoRef = useRef<HTMLVideoElement | null>(null)
   useEffect(() => void (segModeRef.current = segMode), [segMode])
   useEffect(() => void (completedRef.current = completed), [completed])
+  useEffect(() => {
+    slotFramesRef.current = slotInfo.frames
+    slotDancersRef.current = slotInfo.dancers
+    testDancersRef.current = testDancers
+  }, [slotInfo, testDancers])
 
   useEffect(() => void (trackRef.current = track), [track])
   useEffect(() => {
@@ -375,7 +402,7 @@ export function Practice() {
           dancers.forEach((df, di) => {
             const j = nearestFrameIndex(df, t)
             const dfr = j >= 0 ? df[j] : null
-            const active = di === (trackRef.current.activeDancer ?? 0)
+            const active = testDancersRef.current.includes(di)
             if (dfr?.image) {
               drawSkeleton(ctx, dfr.image, {
                 project: containProjector(vw, vh),
@@ -490,8 +517,10 @@ export function Practice() {
     let disposed = false
     const getReference = (): ReferenceContext => {
       const pb = playbackRef.current
-      if (!pb) return { angles: null, mirror: mirrorRef.current }
-      return { angles: anglesAt(trackRef.current, pb.getTime()), mirror: mirrorRef.current }
+      const slots = slotFramesRef.current
+      if (!pb) return { anglesList: slots.map(() => null), mirror: mirrorRef.current }
+      const t = pb.getTime()
+      return { anglesList: slots.map((fr) => anglesAtFrames(fr, t)), mirror: mirrorRef.current }
     }
     setCamStatus('init')
     ;(async () => {
@@ -521,15 +550,29 @@ export function Practice() {
           const canvas = webcamCanvasRef.current
           if (canvas) {
             const ctx = canvas.getContext('2d')
-            // Project through the SAME object-cover geometry the <video> uses, or the
-            // lines sit off the body (they'd be stretched to the box while the video
-            // underneath is cropped).
-            if (ctx) drawSkeleton(ctx, r.liveImage, {
-              perLimb: r.frame?.perLimb,
-              project: coverProjector(webcam.videoWidth, webcam.videoHeight),
-              minVisibility: 0.3,
-              lineWidth: Math.max(2, canvas.width * 0.008),
-            })
+            if (ctx) {
+              // Project through the SAME object-cover geometry the <video> uses, or the
+              // lines sit off the body (they'd be stretched to the box while the video
+              // underneath is cropped).
+              const proj = coverProjector(webcam.videoWidth, webcam.videoHeight)
+              const multi = slotDancersRef.current.length > 1
+              ctx.clearRect(0, 0, canvas.width, canvas.height)
+              r.people.forEach((p, i) => {
+                if (!p.image) return
+                // Solo: per-limb good/bad colors. Group: each person wears their chosen
+                // dancer's color so everyone can tell whose skeleton is whose.
+                drawSkeleton(ctx, p.image, {
+                  perLimb: multi ? undefined : p.frame?.perLimb,
+                  baseColor: multi
+                    ? DANCER_COLORS[(slotDancersRef.current[i] ?? i) % DANCER_COLORS.length]
+                    : undefined,
+                  project: proj,
+                  minVisibility: 0.3,
+                  lineWidth: Math.max(2, canvas.width * 0.008),
+                  clear: false,
+                })
+              })
+            }
           }
           const now = performance.now()
           if (now - meterThrottleRef.current > 250) { meterThrottleRef.current = now; setMeter(r.rollingScore) }
@@ -678,7 +721,7 @@ export function Practice() {
     takeVideoRef.current?.pause()
     dropTakeRecording()
     setSegMode('watch'); segModeRef.current = 'watch'
-    setTestResult(null); setTestError(null)
+    setTestResults([]); setTestError(null)
   }
 
   // ===== Test my skills (the rater) — a top-level, camera-on scoring flow =====
@@ -688,7 +731,7 @@ export function Practice() {
     if (playbackOnly) return
     clearCountdown()
     playbackRef.current?.pause(); setPlaying(false)
-    setTestResult(null); setTestError(null); setRunSummary(null); setTakeUrl(null)
+    setTestResults([]); setTestTimings([]); setTestError(null); setRunSummary(null); setMultiRun(null); setTakeUrl(null)
     raterQueueRef.current = []; raterPosRef.current = 0; runScoresRef.current = []
     setRating(true); ratingRef.current = true
     setSegMode('menu'); segModeRef.current = 'menu'
@@ -709,7 +752,7 @@ export function Practice() {
     const pb = playbackRef.current
     if (!pb) return
     pb.pause(); setPlaying(false)
-    setTestResult(null); setTestError(null)
+    setTestResults([]); setTestError(null)
     setMeter(0)
     setSegMode('test'); segModeRef.current = 'test'
     setLoopRegion(s, e)
@@ -737,38 +780,70 @@ export function Practice() {
     if (m) startRating(m.startSec, m.endSec)
   }
 
-  /** A rated range finished playing: grade it. In a run-through, log the score and advance
-   *  (or summarize at the end); otherwise show the single-segment detail. */
+  /** A rated range finished playing: grade every tracked dancer. In a run-through, log
+   *  the scores and advance (or summarize at the end); otherwise show the detail. */
   function finishTest() {
     playbackRef.current?.pause()
     setPlaying(false)
     stopTakeRecording(true) // finalize the camera recording for side-by-side replay
     const eng = engineRef.current
     const tr = trackRef.current
-    const take = eng ? eng.stopRecording() : []
-    const refAngles = sectionAngles(tr, loopStartRef.current, loopEndRef.current)
-    const ok = take.length >= 3 && refAngles.length >= 2
-    const scored = ok ? scoreSectionDetailed(refAngles, take, cfgRef.current) : null
+    const takes = eng ? eng.stopRecording() : []
+    const s = loopStartRef.current
+    const e = loopEndRef.current
+    // One score per slot: each tracked person vs THEIR reference dancer's timeline.
+    const perSlot = slotFramesRef.current.map((fr, i) => {
+      const take = takes[i] ?? []
+      const refAngles = sectionAnglesFrames(fr, s, e)
+      return take.length >= 3 && refAngles.length >= 2 ? scoreSectionDetailed(refAngles, take, cfgRef.current) : null
+    })
+    const ok = perSlot.some((p) => p !== null)
 
     if (raterQueueRef.current.length > 0) {
       const segIdx = raterQueueRef.current[raterPosRef.current]!
-      runScoresRef.current.push({ index: segIdx, score: scored?.score ?? 0, worstLimb: scored?.worstLimb ?? null })
+      runScoresRef.current.push({
+        index: segIdx,
+        per: perSlot.map((p) => (p ? { score: p.score, worstLimb: p.worstLimb } : null)),
+      })
       raterPosRef.current += 1
       if (raterPosRef.current < raterQueueRef.current.length) {
-        if (scored) flashToast(`Segment ${segIdx + 1}: ${Math.round(scored.score)}%`)
+        if (ok) {
+          const scores = perSlot.map((p) => (p ? `${Math.round(p.score)}%` : '·')).join(' / ')
+          flashToast(`Segment ${segIdx + 1}: ${scores}`)
+        }
         const m = movesRef.current[raterQueueRef.current[raterPosRef.current]!]
         if (m) startRating(m.startSec, m.endSec)
       } else {
-        setRunSummary(summarizeRun(runScoresRef.current))
+        // Summarize the run per tracked dancer; a single dancer keeps the classic recap.
+        const summaries = slotFramesRef.current.map((_, k) =>
+          summarizeRun(runScoresRef.current.map((r) => ({
+            index: r.index,
+            score: r.per[k]?.score ?? 0,
+            worstLimb: r.per[k]?.worstLimb ?? null,
+          }))),
+        )
+        if (summaries.length > 1) {
+          setMultiRun({ dancers: slotDancersRef.current.slice(), summaries })
+          setRunSummary(null)
+        } else {
+          setRunSummary(summaries[0] ?? null)
+          setMultiRun(null)
+        }
         setSegMode('summary'); segModeRef.current = 'summary'
       }
       return
     }
-    setTestResult(scored)
-    setTestTiming(
-      scored ? describeTiming(scored.timingNorm, loopEndRef.current - loopStartRef.current, tr.tempo.beatIntervalSec) : null,
+    setTestResults(perSlot)
+    setTestTimings(
+      perSlot.map((p) => (p ? describeTiming(p.timingNorm, e - s, tr.tempo.beatIntervalSec) : null)),
     )
-    setTestError(ok ? null : "We couldn't see you dancing. Make sure your whole body is in frame, then try again.")
+    setTestError(
+      ok
+        ? null
+        : slotFramesRef.current.length > 1
+          ? "We couldn't see anyone dancing. Make sure everyone's whole body is in frame, then try again."
+          : "We couldn't see you dancing. Make sure your whole body is in frame, then try again.",
+    )
     setSegMode('results'); segModeRef.current = 'results'
   }
   finishTestRef.current = finishTest
@@ -779,7 +854,7 @@ export function Practice() {
     engineRef.current?.stopRecording()
     dropTakeRecording()
     playbackRef.current?.pause(); setPlaying(false)
-    setTestResult(null); setTestError(null)
+    setTestResults([]); setTestError(null)
     raterQueueRef.current = []; runScoresRef.current = []
     setSegMode('menu'); segModeRef.current = 'menu'
   }
@@ -1388,7 +1463,9 @@ export function Practice() {
             skeletons behind it are visible while picking. */}
         {inGo && segMode === 'menu' && (
           <div className={`absolute inset-0 z-30 flex items-center justify-center p-4 ${(track.dancers?.length ?? 0) > 1 ? 'bg-black/35' : 'bg-black/70 backdrop-blur-sm'}`}>
-            <div className="w-full max-w-md rounded-2.5xl border border-line bg-panel/95 p-5 shadow-soft">
+            {/* max-h-full + scroll: with a dancer picker and many parts this panel can grow
+                taller than the stage, and without a cap the top scrolls out of reach. */}
+            <div className="max-h-full w-full max-w-md overflow-y-auto rounded-2.5xl border border-line bg-panel/95 p-5 shadow-soft">
               <div className="flex items-center justify-between">
                 <p className="font-display text-lg font-bold">🎯 Test my skills</p>
                 <button onClick={exitRating} className="text-sm text-ink/50 transition hover:text-ink">✕ Exit</button>
@@ -1397,16 +1474,27 @@ export function Practice() {
               {track.dancers && track.dancers.length > 1 && (
                 <div className="mt-3 rounded-xl border border-line bg-ink/[0.04] p-3">
                   <p className="text-xs font-medium uppercase tracking-wider text-ink/45">
-                    {track.dancers.length} dancers found · grade me against
+                    {track.dancers.length} dancers found · tap everyone who's dancing
                   </p>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {track.dancers.map((_, i) => {
                       const color = DANCER_COLORS[i % DANCER_COLORS.length]!
-                      const active = (track.activeDancer ?? 0) === i
+                      const active = testDancers.includes(i)
                       return (
                         <button
                           key={i}
-                          onClick={() => { void selectDancer(i).then(() => { const pb = playbackRef.current; if (pb) pb.seek(pb.getTime()) }) }}
+                          onClick={() => {
+                            setTestDancers((cur) => {
+                              const next = cur.includes(i)
+                                ? cur.length > 1 ? cur.filter((x) => x !== i) : cur // keep at least one
+                                : [...cur, i]
+                              // A solo pick also becomes the practice dancer, like before.
+                              if (next.length === 1) void selectDancer(next[0]!)
+                              return next
+                            })
+                            const pb = playbackRef.current
+                            if (pb) pb.seek(pb.getTime())
+                          }}
                           className={`flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-semibold transition active:scale-95 ${active ? 'border-transparent text-[#0b0b16]' : 'border-line text-ink/70 hover:text-ink'}`}
                           style={active ? { background: color } : undefined}
                         >
@@ -1416,7 +1504,10 @@ export function Practice() {
                       )
                     })}
                   </div>
-                  <p className="mt-2 text-xs text-ink/45">The skeletons on the video match these colors · your pick is the bold one.</p>
+                  <p className="mt-2 text-xs text-ink/45">
+                    Solo? Keep one picked. Dancing with friends? Pick a dancer for each of you,
+                    then stand the way the video looks · everyone gets scored against their own dancer.
+                  </p>
                 </div>
               )}
               {/* Starting is gated on the camera + pose model being warm — otherwise the
@@ -1461,30 +1552,65 @@ export function Practice() {
             </div>
           </div>
         )}
-        {/* RESULTS — your rating and exactly where it went wrong, then Done. */}
+        {/* RESULTS — everyone's rating and exactly where it went wrong, then Done. */}
         {inGo && segMode === 'results' && (
           <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-            <div className="w-full max-w-md rounded-2.5xl border border-line bg-panel/95 p-5 shadow-soft">
+            <div className="max-h-full w-full max-w-md overflow-y-auto rounded-2.5xl border border-line bg-panel/95 p-5 shadow-soft">
               {testError ? (
                 <>
-                  <p className="font-display text-lg font-bold">Hmm — no dancer detected 🤔</p>
+                  <p className="font-display text-lg font-bold">Hmm, no dancer detected 🤔</p>
                   <p className="mt-2 text-sm text-ink/60">{testError}</p>
                 </>
-              ) : testResult ? (
+              ) : testResults.length > 1 ? (
+                <>
+                  <p className="font-display text-lg font-bold">Group results</p>
+                  <div className="mt-3 space-y-2">
+                    {testResults.map((r, i) => {
+                      const d = slotInfo.dancers[i] ?? i
+                      const color = DANCER_COLORS[d % DANCER_COLORS.length]!
+                      return (
+                        <div key={i} className="rounded-xl border border-line bg-ink/[0.03] p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-2 text-sm font-semibold text-ink/80">
+                              <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} />
+                              Dancer {d + 1}
+                            </span>
+                            {r ? (
+                              <span className="font-display text-2xl font-bold" style={{ color: scoreVerdict(r.score).color }}>
+                                {Math.round(r.score)}%
+                              </span>
+                            ) : (
+                              <span className="text-xs text-ink/45">not seen on camera</span>
+                            )}
+                          </div>
+                          {r && (
+                            <p className="mt-1 text-xs text-ink/60">
+                              {scoreVerdict(r.score).label}
+                              {r.worstLimb ? ` · watch the ${LIMB_LABEL[r.worstLimb].toLowerCase()}` : ''}
+                              {testTimings[i] ? ` · ${testTimings[i]}` : ''}
+                            </p>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <p className="mt-3 text-xs text-ink/45">Colors match the skeletons you danced with.</p>
+                </>
+              ) : testResults[0] ? (
                 <>
                   <div className="flex items-end justify-between gap-3">
                     <div>
                       <p className="text-xs uppercase tracking-wider text-ink/45">Your match</p>
-                      <p className="font-display text-5xl font-bold" style={{ color: scoreVerdict(testResult.score).color }}>
-                        {Math.round(testResult.score)}%
+                      <p className="font-display text-5xl font-bold" style={{ color: scoreVerdict(testResults[0].score).color }}>
+                        {Math.round(testResults[0].score)}%
                       </p>
                     </div>
-                    <p className="pb-1 text-sm font-semibold" style={{ color: scoreVerdict(testResult.score).color }}>
-                      {scoreVerdict(testResult.score).label}
+                    <p className="pb-1 text-sm font-semibold" style={{ color: scoreVerdict(testResults[0].score).color }}>
+                      {scoreVerdict(testResults[0].score).label}
                     </p>
                   </div>
                   <div className="mt-4 space-y-1.5">
-                    {(Object.entries(testResult.perLimb) as [Limb, { errorDeg: number; ok: boolean }][]).map(([limb, res]) => (
+                    {(Object.entries(testResults[0].perLimb) as [Limb, { errorDeg: number; ok: boolean }][]).map(([limb, res]) => (
                       <div key={limb} className="flex items-center gap-2">
                         <span className="w-20 shrink-0 text-xs text-ink/55">{LIMB_LABEL[limb]}</span>
                         <div className="h-2 flex-1 overflow-hidden rounded-full bg-ink/10">
@@ -1498,10 +1624,10 @@ export function Practice() {
                     ))}
                   </div>
                   <ul className="mt-4 space-y-1.5">
-                    {feedbackLines(testResult).map((line, i) => (
+                    {feedbackLines(testResults[0]).map((line, i) => (
                       <li key={i} className="text-sm text-ink/70">· {line}</li>
                     ))}
-                    {testTiming && <li className="text-sm text-ink/70">· {testTiming}</li>}
+                    {testTimings[0] && <li className="text-sm text-ink/70">· {testTimings[0]}</li>}
                   </ul>
                 </>
               ) : null}
@@ -1553,6 +1679,64 @@ export function Practice() {
                     </div>
                   )
                 })}
+              </div>
+              <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                <button onClick={startRunThrough} className={btn}>↻ Run again</button>
+                <button onClick={() => setSegMode('menu')} className={btn}>🎯 One segment</button>
+                <button
+                  onClick={exitRating}
+                  className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
+                >
+                  ✓ Done
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* GROUP SUMMARY — the run recap when several dancers tested together. */}
+        {inGo && segMode === 'summary' && multiRun && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+            <div className="flex max-h-full w-full max-w-md flex-col rounded-2.5xl border border-line bg-panel/95 p-5 shadow-soft">
+              <p className="text-xs uppercase tracking-wider text-ink/45">Your group run</p>
+              <div className="mt-2 space-y-1.5">
+                {multiRun.summaries.map((sum, k) => {
+                  const d = multiRun.dancers[k] ?? k
+                  const color = DANCER_COLORS[d % DANCER_COLORS.length]!
+                  return (
+                    <div key={k} className="flex items-center justify-between gap-2 rounded-xl border border-line bg-ink/[0.03] px-3 py-2">
+                      <span className="flex items-center gap-2 text-sm font-semibold text-ink/80">
+                        <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} />
+                        Dancer {d + 1}
+                      </span>
+                      <span className="text-xs text-ink/55">
+                        {sum.nailed} nailed · {sum.close} close · {sum.off} to work on
+                      </span>
+                      <span className="font-display text-xl font-bold" style={{ color: scoreVerdict(sum.overall).color }}>
+                        {Math.round(sum.overall)}%
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="mt-4 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
+                {(multiRun.summaries[0]?.segments ?? []).map((s0, row) => (
+                  <div key={s0.index} className="flex items-center gap-2 rounded-xl border border-line bg-ink/[0.03] px-3 py-2">
+                    <span className="w-20 shrink-0 text-xs font-semibold text-ink/70">Segment {s0.index + 1}</span>
+                    <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
+                      {multiRun.summaries.map((sum, k) => {
+                        const seg = sum.segments[row]
+                        const d = multiRun.dancers[k] ?? k
+                        const color = DANCER_COLORS[d % DANCER_COLORS.length]!
+                        return (
+                          <span key={k} className="flex items-center gap-1 text-xs tabular-nums text-ink/70">
+                            <span className="h-2 w-2 rounded-full" style={{ background: color }} />
+                            {seg ? `${Math.round(seg.score)}%` : '·'}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))}
               </div>
               <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
                 <button onClick={startRunThrough} className={btn}>↻ Run again</button>

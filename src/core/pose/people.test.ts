@@ -3,7 +3,7 @@
 // "dancers". These tests pin that behavior with synthetic detections.
 
 import { describe, expect, it } from 'vitest'
-import { associatePeople, type DetectedFrame, type DetectedPerson } from './people'
+import { associatePeople, assignPeopleToSlots, medianX, type DetectedFrame, type DetectedPerson } from './people'
 import { LM, type Landmark } from './types'
 
 /** A person standing at image-x `cx` with torso width/height `size`. */
@@ -72,5 +72,42 @@ describe('associatePeople', () => {
     const solo = Array.from({ length: 10 }, (_, i) => frame(i * 0.1, person(0.5, 0.2)))
     expect(associatePeople(solo)).toHaveLength(1)
     expect(associatePeople([])).toHaveLength(0)
+  })
+})
+
+describe('assignPeopleToSlots', () => {
+  it('orders live people display-left to display-right (mirrored camera)', () => {
+    // The camera preview is mirrored: raw x 0.7 shows on the display LEFT.
+    const a = person(0.7, 0.2) // display left
+    const b = person(0.3, 0.2) // display right
+    const slots = assignPeopleToSlots([b, a], 2)
+    expect(slots[0]).toBe(a)
+    expect(slots[1]).toBe(b)
+  })
+
+  it('drops the least prominent extras when more people than slots', () => {
+    const big = person(0.5, 0.25)
+    const passerby = person(0.9, 0.05)
+    const slots = assignPeopleToSlots([passerby, big], 1)
+    expect(slots).toHaveLength(1)
+    expect(slots[0]).toBe(big)
+  })
+
+  it('leaves missing slots null', () => {
+    const only = person(0.5, 0.2)
+    const slots = assignPeopleToSlots([only], 3)
+    expect(slots.filter((s) => s !== null)).toHaveLength(1)
+    expect(assignPeopleToSlots([], 2)).toEqual([null, null])
+  })
+})
+
+describe('medianX', () => {
+  it('orders dancers by where they stand', () => {
+    const left = Array.from({ length: 9 }, (_, i) => ({ t: i, ...person(0.25, 0.2) }))
+    const right = Array.from({ length: 9 }, (_, i) => ({ t: i, ...person(0.75, 0.2) }))
+    expect(medianX(left)).toBeLessThan(medianX(right))
+  })
+  it('falls back to center with no image landmarks', () => {
+    expect(medianX([{ }, { }])).toBe(0.5)
   })
 })

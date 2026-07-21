@@ -87,13 +87,23 @@ export function nearestFrameIndex(frames: ReferenceFrame[], t: number): number {
   return Math.abs(after.t - t) < Math.abs(t - before.t) ? lo : hi
 }
 
+/** Angle vector at time `t` (nearest frame) from any person's frame timeline. */
+export function anglesAtFrames(frames: ReferenceFrame[], t: number): number[] | null {
+  const i = nearestFrameIndex(frames, t)
+  return i >= 0 ? frames[i]!.angles : null
+}
+
 /** Reference angle vector at time `t` (nearest frame). */
 export function anglesAt(track: ReferenceTrack, t: number): number[] | null {
-  const i = nearestFrameIndex(track.frames, t)
-  return i >= 0 ? track.frames[i]!.angles : null
+  return anglesAtFrames(track.frames, t)
+}
+
+/** All angle vectors in [startSec, endSec) from any person's frame timeline. */
+export function sectionAnglesFrames(frames: ReferenceFrame[], startSec: number, endSec: number): number[][] {
+  return frames.filter((f) => f.t >= startSec && f.t < endSec).map((f) => f.angles)
 }
 
 /** All reference angle vectors whose time falls within [startSec, endSec). */
 export function sectionAngles(track: ReferenceTrack, startSec: number, endSec: number): number[][] {
-  return track.frames.filter((f) => f.t >= startSec && f.t < endSec).map((f) => f.angles)
+  return sectionAnglesFrames(track.frames, startSec, endSec)
 }

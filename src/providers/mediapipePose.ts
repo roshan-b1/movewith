@@ -78,13 +78,14 @@ export class MediaPipePoseProvider implements PoseProvider {
   private async doInit(): Promise<void> {
     const vision = await FilesetResolver.forVisionTasks(this.opts.wasmBase)
 
-    // IMAGE mode (offline extraction) detects several people so multi-dancer videos can
-    // offer a "which dancer?" picker. The live webcam stays single-pose for fps.
+    // Both modes detect several people: IMAGE so multi-dancer videos can offer a "which
+    // dancer?" picker, VIDEO so a group can Test my skills together. MediaPipe only runs
+    // its full pipeline per person actually present, so a solo dancer costs the same.
     const make = (runningMode: 'IMAGE' | 'VIDEO', delegate: 'GPU' | 'CPU', modelUrl: string) =>
       PoseLandmarker.createFromOptions(vision, {
         baseOptions: { modelAssetPath: modelUrl, delegate },
         runningMode,
-        numPoses: runningMode === 'IMAGE' ? 4 : 1,
+        numPoses: 4,
         minPoseDetectionConfidence: 0.5,
         minPosePresenceConfidence: 0.5,
         minTrackingConfidence: 0.5,
@@ -124,7 +125,24 @@ export class MediaPipePoseProvider implements PoseProvider {
 
   detectLive(input: HTMLVideoElement, timestampMs: number): PoseResult | null {
     if (!this.video) return null
-    return mapResult(this.video.detectForVideo(input, timestampMs))
+    // Several people (or a phantom detection) can be in frame — a solo flow wants the
+    // most prominent body, so pick the largest by image-space torso length.
+    const all = mapAll(this.video.detectForVideo(input, timestampMs))
+    if (all.length === 0) return null
+    let best = all[0]!
+    let bestSize = -1
+    for (const p of all) {
+      const sh = p.image[11]
+      const hip = p.image[23]
+      const size = sh && hip ? Math.hypot(sh.x - hip.x, sh.y - hip.y) : 0
+      if (size > bestSize) { bestSize = size; best = p }
+    }
+    return best
+  }
+
+  detectLiveAll(input: HTMLVideoElement, timestampMs: number): PoseResult[] {
+    if (!this.video) return []
+    return mapAll(this.video.detectForVideo(input, timestampMs))
   }
 
   get delegateInUse(): 'GPU' | 'CPU' {

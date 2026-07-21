@@ -19,8 +19,12 @@ export interface PoseProvider {
   /** Detect EVERY person in a still frame (multi-dancer videos). Order is arbitrary —
    *  association across frames is the caller's job (core/pose/people.ts). */
   detectImageAll(input: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement): Promise<PoseResult[]>
-  /** Detect a pose from a live stream frame. `timestampMs` must increase monotonically. */
+  /** Detect a pose from a live stream frame. `timestampMs` must increase monotonically.
+   *  With several people in frame this returns the most prominent one. */
   detectLive(input: HTMLVideoElement, timestampMs: number): PoseResult | null
+  /** Detect EVERY person in a live stream frame (group "Test my skills"). Order is
+   *  arbitrary — slot assignment is the caller's job (core/pose/people.ts). */
+  detectLiveAll(input: HTMLVideoElement, timestampMs: number): PoseResult[]
   /** Release GPU/wasm resources. */
   close(): void
 }
