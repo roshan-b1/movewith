@@ -1166,12 +1166,6 @@ export function Practice() {
               ))}
             </div>
           </div>
-          {!playbackOnly && (
-            <p className="text-xs text-ink/45">
-              Just watch and drill — no camera here. When you're ready, 🎯 Test my skills turns on
-              your camera, records you, and scores it so you can watch yourself back.
-            </p>
-          )}
         </div>
 
         <button onClick={goToBounds} className="rounded-2xl bg-brand py-4 text-lg font-bold text-cream shadow-glow transition hover:brightness-105 active:scale-[0.99]">
