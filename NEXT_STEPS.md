@@ -15,11 +15,16 @@ deliberate "do later" so the current app stays focused.
   (tap to place cuts) stays the primary path. Tuning knobs in `segment.ts`: `CONTRAST_FLOOR`
   (raise = fewer/coarser cuts) and `MIN_DISTINCT_DEG` (how many degrees of joint movement
   separate "same move, jittered" from "new move") — worth revisiting against real footage.
-- **Thorough step-direction detection.** Recognize/label the actual dance step in each segment
-  (which move it is, its direction), not just detect where it changes. Builds on the novelty
-  boundaries above.
-- **Auto-detect dancing vs talking.** Find the dance parts of a tutorial automatically and a
-  mode that jumps straight to them (skips intros/explanations without manual cutting).
+- **Thorough step-direction detection — PARTIALLY BUILT.** Each segment now gets a
+  kinematic character label (`core/reference/describe.ts`): which limbs carry the move
+  (Arms / Footwork / Full body), whether it travels across the frame, and a repeat count
+  from pose self-matching (e.g. "Footwork · 4×"). Shown on the practice badge and as
+  part-picker tooltips in the rater. Still future: naming actual steps (grapevine,
+  bodyroll, …) — that needs a labeled move dataset.
+- **Auto-detect dancing vs talking — BUILT.** Sustained stretches where the legs sit
+  near-still read as explanation, not dancing (`core/reference/talking.ts`); auto-detect
+  pre-skips those segments with an undo toast. Validated: an all-dance real video gets zero
+  false positives. Future: a "jump straight to the dancing" control on first open.
 - **Smarter segment drilling.** Per-segment replay counts, an explicit "mark complete" beyond
   the auto-unlock, then a final full run-through "real practice" mode with graded slow-down.
 

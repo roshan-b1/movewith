@@ -15,6 +15,14 @@ export interface SectionScore {
   perLimb: Record<Limb, LimbResult>
   /** Number of aligned frame pairs scored. */
   pairs: number
+  /**
+   * Mean timing offset of the dancer vs the reference, as a fraction of the section
+   * (-1..1). The DTW path says which live frame matched each reference frame; when the
+   * live frame sits consistently LATER in the take than the reference frame does in the
+   * section, the dancer is running behind (positive). Negative = rushing ahead.
+   * Multiply by the section duration for seconds.
+   */
+  timingNorm: number
 }
 
 const ALL_LIMBS: readonly Limb[] = ['leftArm', 'rightArm', 'leftLeg', 'rightLeg', 'torso']
@@ -34,20 +42,24 @@ export function scoreSection(
     Object.fromEntries(ALL_LIMBS.map((l) => [l, { errorDeg: 0, ok: true }])) as Record<Limb, LimbResult>
 
   if (refAngles.length === 0 || liveAngles.length === 0) {
-    return { score: 0, worstLimb: null, perLimb: emptyLimbs(), pairs: 0 }
+    return { score: 0, worstLimb: null, perLimb: emptyLimbs(), pairs: 0, timingNorm: 0 }
   }
 
   const { path } = dtw(refAngles, liveAngles, dtwOptions)
   if (path.length === 0) {
-    return { score: 0, worstLimb: null, perLimb: emptyLimbs(), pairs: 0 }
+    return { score: 0, worstLimb: null, perLimb: emptyLimbs(), pairs: 0, timingNorm: 0 }
   }
 
   let scoreSum = 0
+  let offsetSum = 0
+  const refSpan = Math.max(1, refAngles.length - 1)
+  const liveSpan = Math.max(1, liveAngles.length - 1)
   const limbErrSum: Record<string, number> = {}
 
   for (const [ri, li] of path) {
     const cmp = compareAngles(refAngles[ri]!, liveAngles[li]!, cfg)
     scoreSum += cmp.score
+    offsetSum += li / liveSpan - ri / refSpan
     for (const limb of ALL_LIMBS) {
       limbErrSum[limb] = (limbErrSum[limb] ?? 0) + cmp.perLimb[limb].errorDeg
     }
@@ -70,7 +82,34 @@ export function scoreSection(
     worstLimb,
     perLimb,
     pairs: path.length,
+    timingNorm: offsetSum / path.length,
   }
+}
+
+/**
+ * Turn a timing offset into a coaching line, or null when the dancer was basically on
+ * time. Expressed in beats when the tempo is known (dancers count in beats, not seconds).
+ */
+export function describeTiming(
+  timingNorm: number,
+  durationSec: number,
+  beatIntervalSec?: number,
+): string | null {
+  const sec = timingNorm * durationSec
+  const beats = beatIntervalSec && beatIntervalSec > 0 ? sec / beatIntervalSec : null
+  // On time: within a third of a beat (or 0.25s without a tempo).
+  if (beats !== null ? Math.abs(beats) < 0.34 : Math.abs(sec) < 0.25) return null
+  const amount =
+    beats !== null
+      ? Math.abs(beats) < 0.75
+        ? 'about half a beat'
+        : Math.abs(beats) < 1.5
+          ? 'about a beat'
+          : `about ${Math.round(Math.abs(beats))} beats`
+      : `about ${Math.abs(sec).toFixed(1)}s`
+  return sec > 0
+    ? `Timing: you ran ${amount} behind the music. Start each move a touch sooner.`
+    : `Timing: you rushed ${amount} ahead of the music. Let the beat catch up to you.`
 }
 
 export type SectionPhase = 'start' | 'middle' | 'end'

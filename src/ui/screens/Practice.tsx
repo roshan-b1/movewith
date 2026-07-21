@@ -5,7 +5,7 @@ import { PracticeEngine, type ReferenceContext } from '../../engine/practiceEngi
 import { startCamera, listVideoInputs, preferredCameraId, type CameraHandle } from '../../engine/camera'
 import { getPoseProvider } from '../../providers/instance'
 import { anglesAt, sectionAngles, nearestFrameIndex } from '../../core/reference/build'
-import { scoreSectionDetailed, summarizeRun, type DetailedSectionScore, type RunSummary } from '../../core/compare/score'
+import { scoreSectionDetailed, summarizeRun, describeTiming, type DetailedSectionScore, type RunSummary } from '../../core/compare/score'
 import { STRICT, LOOSE, type ScoreConfig, type Limb } from '../../core/compare/similarity'
 import type { Section } from '../../core/audio/beats'
 import {
@@ -14,6 +14,8 @@ import {
   evenMoveBounds,
   autoMoveBounds,
 } from '../../core/reference/segment'
+import { detectTalkingRanges, overlapFraction } from '../../core/reference/talking'
+import { describeMove } from '../../core/reference/describe'
 import { VoiceController, type VoiceCommand } from '../../engine/voice'
 import { BeatMusic } from '../../engine/beatMusic'
 import { drawSkeleton, drawHumanFigure, worldProjector, containProjector, coverProjector } from '../components/drawSkeleton'
@@ -152,6 +154,8 @@ export function Practice() {
   //  - 'replay'  side-by-side: instructor + your recorded take (watch yourself back)
   const [segMode, setSegMode] = useState<'watch' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
   const [testResult, setTestResult] = useState<DetailedSectionScore | null>(null)
+  /** Coaching line about being ahead of / behind the music (null = on time). */
+  const [testTiming, setTestTiming] = useState<string | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
   const [runSummary, setRunSummary] = useState<RunSummary | null>(null)
   /** Object URL of the camera recording captured during the last take. */
@@ -172,6 +176,12 @@ export function Practice() {
 
   const moves = useMemo(() => buildMovesFromBounds(trimStart, trimEnd, moveBounds), [trimStart, trimEnd, moveBounds])
   const ticks = useMemo(() => moveTicks(moves), [moves])
+  // What each segment's move is like (which limbs, travels, repeats) — shown as a small
+  // label so segments read as moves, not just numbers.
+  const moveLabels = useMemo(
+    () => moves.map((m) => describeMove(track.frames, m.startSec, m.endSec)?.label ?? null),
+    [moves, track],
+  )
 
   // refs
   const instructorVideoRef = useRef<HTMLVideoElement | null>(null)
@@ -755,7 +765,10 @@ export function Practice() {
       return
     }
     setTestResult(scored)
-    setTestError(ok ? null : "We couldn't see you dancing — make sure your whole body is in frame, then try again.")
+    setTestTiming(
+      scored ? describeTiming(scored.timingNorm, loopEndRef.current - loopStartRef.current, tr.tempo.beatIntervalSec) : null,
+    )
+    setTestError(ok ? null : "We couldn't see you dancing. Make sure your whole body is in frame, then try again.")
     setSegMode('results'); segModeRef.current = 'results'
   }
   finishTestRef.current = finishTest
@@ -910,14 +923,30 @@ export function Practice() {
       runCountdown(() => { playbackRef.current?.play(); setPlaying(true) }, 'Playing next segment in')
     }
   }
-  // (Re)detect the moves for a range. 'auto' snaps cuts to natural pauses; 'even' spaces
-  // them evenly. Clears progress since the moves changed.
+  // (Re)detect the moves for a range. 'auto' cuts on distinct-movement changes and
+  // pre-skips talking/explaining stretches; 'even' spaces them evenly. Clears progress
+  // since the moves changed.
   function segmentInto(s: number, e: number, mode: 'auto' | 'even') {
     const bounds = mode === 'auto'
       ? autoMoveBounds(trackRef.current.frames, s, e, moveSec, trackRef.current.tempo)
       : evenMoveBounds(s, e, moveSec)
     setMoveBounds(bounds)
-    setCompleted([]); completedRef.current = []; setSkip([])
+    setCompleted([]); completedRef.current = []
+    // Auto-detect also spots where the instructor is talking rather than dancing (legs
+    // near-still for a sustained stretch) and pre-skips those segments. ⊘ undoes any.
+    let skipped: number[] = []
+    if (mode === 'auto' && trackRef.current.frames.length > 0) {
+      const talk = detectTalkingRanges(trackRef.current.frames, s, e)
+      if (talk.length > 0) {
+        skipped = buildMovesFromBounds(s, e, bounds)
+          .filter((m) => overlapFraction(talk, m.startSec, m.endSec) >= 0.6)
+          .map((m) => m.index)
+      }
+      if (skipped.length > 0) {
+        flashToast(`⊘ Skipped ${skipped.length} talking ${skipped.length === 1 ? 'part' : 'parts'} · tap ⊘ to undo`)
+      }
+    }
+    setSkip(skipped)
     setMoveIdx(0); moveIdxRef.current = 0
     setPreviewIdx(-1)
   }
@@ -1207,6 +1236,11 @@ export function Practice() {
         {inGo && !camMain && (
           <span className="absolute left-3 top-3 z-20 rounded-2xl bg-brand px-3 py-2 font-display text-sm font-bold text-cream shadow-glow">
             {fullRun ? 'Full song' : `Segment ${moveIdx + 1} of ${moves.length}`}
+            {!fullRun && moveLabels[moveIdx] && (
+              <span className="block text-[10px] font-semibold uppercase tracking-wider text-cream/80">
+                {moveLabels[moveIdx]}
+              </span>
+            )}
           </span>
         )}
         {/* Editor preview: which segment is playing. */}
@@ -1404,6 +1438,7 @@ export function Practice() {
                     key={m.index}
                     onClick={() => { raterQueueRef.current = []; startRating(m.startSec, m.endSec) }}
                     disabled={camStatus !== 'ready'}
+                    title={moveLabels[m.index] ?? undefined}
                     className="rounded-xl border border-line bg-ink/[0.06] px-4 py-2 text-sm font-semibold text-ink/80 transition hover:border-brand2/60 hover:text-ink active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {m.index + 1}
@@ -1466,6 +1501,7 @@ export function Practice() {
                     {feedbackLines(testResult).map((line, i) => (
                       <li key={i} className="text-sm text-ink/70">· {line}</li>
                     ))}
+                    {testTiming && <li className="text-sm text-ink/70">· {testTiming}</li>}
                   </ul>
                 </>
               ) : null}
