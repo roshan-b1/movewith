@@ -27,8 +27,11 @@ deliberate "do later" so the current app stays focused.
   near-still read as explanation, not dancing (`core/reference/talking.ts`); auto-detect
   pre-skips those segments with an undo toast. Validated: an all-dance real video gets zero
   false positives. Future: a "jump straight to the dancing" control on first open.
-- **Smarter segment drilling.** Per-segment replay counts, an explicit "mark complete" beyond
-  the auto-unlock, then a final full run-through "real practice" mode with graded slow-down.
+- **Smarter segment drilling — MOSTLY BUILT.** Practice ends with a camera-free full
+  run-through (Got it hands off to Test my skills, or keep drilling), and Test my skills is
+  one continuous pass of the whole dance to the music, sliced back up by instructor time for
+  a part-by-part recap. Still future: graded slow-down across the run (start at 0.5x and
+  work up automatically).
 
 ## Content / modes
 

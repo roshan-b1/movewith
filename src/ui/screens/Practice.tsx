@@ -18,6 +18,7 @@ import {
 import { detectTalkingRanges, overlapFraction } from '../../core/reference/talking'
 import { captureDancerThumbs } from '../components/dancerThumbs'
 import { loopWrapAction } from '../../core/practice/loopWrap'
+import { sliceTakeBySegments } from '../../core/practice/takeSlice'
 import { VoiceController, type VoiceCommand } from '../../engine/voice'
 import { BeatMusic } from '../../engine/beatMusic'
 import { drawSkeleton, drawHumanFigure, worldProjector, containProjector, coverProjector } from '../components/drawSkeleton'
@@ -245,11 +246,8 @@ export function Practice() {
   const segModeRef = useRef<'watch' | 'runthrough' | 'rundone' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
   /** True while the rater is recording a single scored pass (the segment playing once through). */
   const testActiveRef = useRef(false)
-  /** Full run-through state: the queue of segment indices to score, and per-segment
-   *  scores so far — one entry per tracked dancer slot (null = that person wasn't seen). */
-  const raterQueueRef = useRef<number[]>([])
-  const raterPosRef = useRef(0)
-  const runScoresRef = useRef<{ index: number; per: ({ score: number; worstLimb: Limb | null } | null)[] }[]>([])
+  /** True while the current take is the full-dance pass (sliced per segment afterwards). */
+  const wholeRunRef = useRef(false)
   const finishTestRef = useRef<() => void>(() => {})
   const cancelTestRef = useRef<() => void>(() => {})
   const recorderRef = useRef<MediaRecorder | null>(null)
@@ -523,9 +521,9 @@ export function Practice() {
     const getReference = (): ReferenceContext => {
       const pb = playbackRef.current
       const slots = slotFramesRef.current
-      if (!pb) return { anglesList: slots.map(() => null), mirror: mirrorRef.current }
+      if (!pb) return { anglesList: slots.map(() => null), mirror: mirrorRef.current, timeSec: 0 }
       const t = pb.getTime()
-      return { anglesList: slots.map((fr) => anglesAtFrames(fr, t)), mirror: mirrorRef.current }
+      return { anglesList: slots.map((fr) => anglesAtFrames(fr, t)), mirror: mirrorRef.current, timeSec: t }
     }
     setCamStatus('init')
     ;(async () => {
@@ -749,7 +747,7 @@ export function Practice() {
     clearCountdown()
     playbackRef.current?.pause(); setPlaying(false)
     setTestResults([]); setTestTimings([]); setTestError(null); setRunSummary(null); setMultiRun(null); setTakeUrl(null)
-    raterQueueRef.current = []; raterPosRef.current = 0; runScoresRef.current = []
+    wholeRunRef.current = false
     setRating(true); ratingRef.current = true
     setSegMode('menu'); segModeRef.current = 'menu'
   }
@@ -758,23 +756,23 @@ export function Practice() {
   function exitRating() {
     testActiveRef.current = false
     dropTakeRecording()
-    raterQueueRef.current = []; runScoresRef.current = []
+    wholeRunRef.current = false
     setRating(false); ratingRef.current = false
     back()
   }
 
-  /** Rate a single range [s,e] once, with the music. */
-  function startRating(s: number, e: number) {
+  /** Rate a range [s,e] once, with the music. `whole` means this is the full-dance pass,
+   *  which gets sliced back into segments for the recap. */
+  function startRating(s: number, e: number, whole = false) {
     clearCountdown()
     const pb = playbackRef.current
     if (!pb) return
     pb.pause(); setPlaying(false)
     setTestResults([]); setTestError(null)
     setMeter(0)
+    wholeRunRef.current = whole
     setSegMode('test'); segModeRef.current = 'test'
     setLoopRegion(s, e)
-    const running = raterQueueRef.current.length > 1
-    const label = running ? `Segment ${raterPosRef.current + 1} of ${raterQueueRef.current.length} in` : 'Your turn in'
     runCountdown(() => {
       const p = playbackRef.current
       if (!p) return
@@ -783,22 +781,26 @@ export function Practice() {
       engineRef.current?.startRecording()
       startTakeRecording()
       p.play(); setPlaying(true)
-    }, label, 3)
+    }, whole ? 'Dance the whole thing in' : 'Your turn in', 3)
   }
 
-  /** Score every non-skipped segment, one at a time, then show the run summary. */
-  function startRunThrough() {
-    const queue = movesRef.current.map((m) => m.index).filter((i) => !skipRef.current.includes(i))
-    if (queue.length === 0) return
-    raterQueueRef.current = queue
-    raterPosRef.current = 0
-    runScoresRef.current = []
-    const m = movesRef.current[queue[0]!]
-    if (m) startRating(m.startSec, m.endSec)
+  /** Dance the whole routine once, straight through, to the music. The parts you cut and
+   *  the bits you marked skip are honoured (playback jumps them), and the single take is
+   *  sliced up afterwards so you still get a part-by-part recap. */
+  function startWholeDanceRun() {
+    startRating(trimStartRef.current, trimEndRef.current, true)
   }
 
-  /** A rated range finished playing: grade every tracked dancer. In a run-through, log
-   *  the scores and advance (or summarize at the end); otherwise show the detail. */
+  /** Restart whatever is currently being tested, from the top. */
+  function restartTest() {
+    testActiveRef.current = false
+    engineRef.current?.stopRecording()
+    dropTakeRecording()
+    startRating(loopStartRef.current, loopEndRef.current, wholeRunRef.current)
+  }
+
+  /** A rated range finished playing: grade every tracked dancer. The full-dance pass is
+   *  one continuous take, sliced per segment for the recap; a single part shows detail. */
   function finishTest() {
     playbackRef.current?.pause()
     setPlaying(false)
@@ -808,48 +810,52 @@ export function Practice() {
     const takes = eng ? eng.stopRecording() : []
     const s = loopStartRef.current
     const e = loopEndRef.current
+
+    if (wholeRunRef.current) {
+      wholeRunRef.current = false
+      const segs = movesRef.current.filter((m) => !skipRef.current.includes(m.index))
+      // Slice the ONE take by instructor time, so each part is scored from the pass the
+      // dancer actually did in one go.
+      const summaries = slotFramesRef.current.map((fr, k) => {
+        const parts = sliceTakeBySegments(takes[k] ?? [], segs)
+        return summarizeRun(parts.map((part) => {
+          const m = segs.find((x) => x.index === part.index)!
+          const refAngles = sectionAnglesFrames(fr, m.startSec, m.endSec)
+          const sc = refAngles.length >= 2 && part.angles.length >= 3
+            ? scoreSectionDetailed(refAngles, part.angles, cfgRef.current)
+            : null
+          return { index: part.index, score: sc?.score ?? 0, worstLimb: sc?.worstLimb ?? null }
+        }))
+      })
+      const sawAnyone = takes.some((t) => (t?.length ?? 0) >= 3)
+      if (!sawAnyone) {
+        setTestResults([])
+        setTestError(
+          slotFramesRef.current.length > 1
+            ? "We couldn't see anyone dancing. Make sure everyone's whole body is in frame, then try again."
+            : "We couldn't see you dancing. Make sure your whole body is in frame, then try again.",
+        )
+        setSegMode('results'); segModeRef.current = 'results'
+        return
+      }
+      if (summaries.length > 1) {
+        setMultiRun({ dancers: slotDancersRef.current.slice(), summaries })
+        setRunSummary(null)
+      } else {
+        setRunSummary(summaries[0] ?? null)
+        setMultiRun(null)
+      }
+      setSegMode('summary'); segModeRef.current = 'summary'
+      return
+    }
+
     // One score per slot: each tracked person vs THEIR reference dancer's timeline.
     const perSlot = slotFramesRef.current.map((fr, i) => {
-      const take = takes[i] ?? []
+      const take = (takes[i] ?? []).map((f) => f.angles)
       const refAngles = sectionAnglesFrames(fr, s, e)
       return take.length >= 3 && refAngles.length >= 2 ? scoreSectionDetailed(refAngles, take, cfgRef.current) : null
     })
     const ok = perSlot.some((p) => p !== null)
-
-    if (raterQueueRef.current.length > 0) {
-      const segIdx = raterQueueRef.current[raterPosRef.current]!
-      runScoresRef.current.push({
-        index: segIdx,
-        per: perSlot.map((p) => (p ? { score: p.score, worstLimb: p.worstLimb } : null)),
-      })
-      raterPosRef.current += 1
-      if (raterPosRef.current < raterQueueRef.current.length) {
-        if (ok) {
-          const scores = perSlot.map((p) => (p ? `${Math.round(p.score)}%` : '·')).join(' / ')
-          flashToast(`Segment ${segIdx + 1}: ${scores}`)
-        }
-        const m = movesRef.current[raterQueueRef.current[raterPosRef.current]!]
-        if (m) startRating(m.startSec, m.endSec)
-      } else {
-        // Summarize the run per tracked dancer; a single dancer keeps the classic recap.
-        const summaries = slotFramesRef.current.map((_, k) =>
-          summarizeRun(runScoresRef.current.map((r) => ({
-            index: r.index,
-            score: r.per[k]?.score ?? 0,
-            worstLimb: r.per[k]?.worstLimb ?? null,
-          }))),
-        )
-        if (summaries.length > 1) {
-          setMultiRun({ dancers: slotDancersRef.current.slice(), summaries })
-          setRunSummary(null)
-        } else {
-          setRunSummary(summaries[0] ?? null)
-          setMultiRun(null)
-        }
-        setSegMode('summary'); segModeRef.current = 'summary'
-      }
-      return
-    }
     setTestResults(perSlot)
     setTestTimings(
       perSlot.map((p) => (p ? describeTiming(p.timingNorm, e - s, tr.tempo.beatIntervalSec) : null)),
@@ -872,7 +878,7 @@ export function Practice() {
     dropTakeRecording()
     playbackRef.current?.pause(); setPlaying(false)
     setTestResults([]); setTestError(null)
-    raterQueueRef.current = []; runScoresRef.current = []
+    wholeRunRef.current = false
     setSegMode('menu'); segModeRef.current = 'menu'
   }
   cancelTestRef.current = cancelTest
@@ -1382,14 +1388,23 @@ export function Practice() {
             {musicOn ? '🔊 Beat on' : '🔇 Beat off'}
           </button>
         )}
-        {/* Bail out of a camera test back to watching. */}
+        {/* Start the take over, or bail out of the camera test entirely. */}
         {inGo && segMode === 'test' && (
-          <button
-            onClick={cancelTest}
-            className="absolute right-3 top-3 z-20 rounded-2xl border border-line bg-black/50 px-3 py-2 text-sm font-semibold text-cream/90 backdrop-blur transition hover:border-bad/60 active:scale-95"
-          >
-            ✕ Cancel
-          </button>
+          <div className="absolute right-3 top-3 z-20 flex gap-2">
+            <button
+              onClick={restartTest}
+              title="Start this take again from the top"
+              className="rounded-2xl border border-line bg-black/50 px-3 py-2 text-sm font-semibold text-cream/90 backdrop-blur transition hover:border-brand2/60 active:scale-95"
+            >
+              ↻ Restart
+            </button>
+            <button
+              onClick={cancelTest}
+              className="rounded-2xl border border-line bg-black/50 px-3 py-2 text-sm font-semibold text-cream/90 backdrop-blur transition hover:border-bad/60 active:scale-95"
+            >
+              ✕ Cancel
+            </button>
+          </div>
         )}
         {/* Mirror is done by flipping the CANVAS draw (see drawInstructor), never by
             CSS-transforming the <video> — that tore into a split-screen on Windows. When
@@ -1574,21 +1589,21 @@ export function Practice() {
               {/* Starting is gated on the camera + pose model being warm — otherwise the
                   first seconds of the take have no tracking and score as "couldn't see you". */}
               <button
-                onClick={startRunThrough}
+                onClick={startWholeDanceRun}
                 disabled={camStatus !== 'ready'}
                 className="mt-4 w-full rounded-2xl bg-brand2 px-5 py-3 text-left font-display text-base font-bold text-[#06222a] shadow-soft transition hover:brightness-105 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
               >
-                ▶ Full run-through · recommended
+                ▶ Dance the whole thing
                 <span className="block text-xs font-medium text-[#06222a]/70">
-                  Dance the whole thing once · every part scored, then a full recap
+                  Straight through to the music, once · then a part-by-part recap
                 </span>
               </button>
-              <p className="mt-4 mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Or just one part</p>
+              <p className="mt-4 mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Or drill just one part</p>
               <div className="flex flex-wrap gap-2">
                 {moves.filter((m) => !skip.includes(m.index)).map((m) => (
                   <button
                     key={m.index}
-                    onClick={() => { raterQueueRef.current = []; startRating(m.startSec, m.endSec) }}
+                    onClick={() => startRating(m.startSec, m.endSec)}
                     disabled={camStatus !== 'ready'}
                     className="rounded-xl border border-line bg-ink/[0.06] px-4 py-2 text-sm font-semibold text-ink/80 transition hover:border-brand2/60 hover:text-ink active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -1697,7 +1712,7 @@ export function Practice() {
                     🎬 Side by side
                   </button>
                 )}
-                <button onClick={() => { raterQueueRef.current = []; startRating(loopStartRef.current, loopEndRef.current) }} className={btn}>↻ Try again</button>
+                <button onClick={restartTest} className={btn}>↻ Try again</button>
                 <button onClick={() => setSegMode('menu')} className={btn}>🎯 Rate something else</button>
                 <button
                   onClick={exitRating}
@@ -1741,7 +1756,7 @@ export function Practice() {
                 })}
               </div>
               <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
-                <button onClick={startRunThrough} className={btn}>↻ Run again</button>
+                <button onClick={startWholeDanceRun} className={btn}>↻ Dance it again</button>
                 <button onClick={() => setSegMode('menu')} className={btn}>🎯 One segment</button>
                 <button
                   onClick={exitRating}
@@ -1799,7 +1814,7 @@ export function Practice() {
                 ))}
               </div>
               <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
-                <button onClick={startRunThrough} className={btn}>↻ Run again</button>
+                <button onClick={startWholeDanceRun} className={btn}>↻ Dance it again</button>
                 <button onClick={() => setSegMode('menu')} className={btn}>🎯 One segment</button>
                 <button
                   onClick={exitRating}
@@ -2038,7 +2053,7 @@ export function Practice() {
       ) : (
         <div className="flex min-h-[24px] items-center justify-center text-sm">
           <span className="text-ink/40">
-            {segMode === 'menu' ? 'Pick what to test.' : segMode === 'test' ? '🎥 Dance it — you’re being scored and recorded.' : segMode === 'summary' ? 'Your run recap is above.' : 'Check your feedback above.'}
+            {segMode === 'menu' ? 'Pick what to test.' : segMode === 'test' ? '🎥 Dance it · you’re being scored and recorded.' : segMode === 'summary' ? 'Your run recap is above.' : 'Check your feedback above.'}
           </span>
         </div>
       )}

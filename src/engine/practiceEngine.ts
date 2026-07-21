@@ -18,6 +18,16 @@ export interface ReferenceContext {
   anglesList: (number[] | null)[]
   /** Whether the dancer is in mirror mode (we mirror the reference to match). */
   mirror: boolean
+  /** Instructor timeline position, stamped onto recorded frames so a single continuous
+   *  take can be sliced back into segments for a per-part recap. */
+  timeSec: number
+}
+
+/** One recorded frame of a take: what the dancer did, and where in the routine. */
+export interface TakeFrame {
+  /** Instructor time (seconds) this was danced against. */
+  t: number
+  angles: number[]
 }
 
 /** One tracked person's live read for this frame. */
@@ -73,8 +83,8 @@ export class PracticeEngine {
   private rafId = 0
   private rollingPer: number[] = []
   private recording = false
-  /** Per-slot take buffers: takes[slot] = angle vectors in time order. */
-  private takes: number[][][] = []
+  /** Per-slot take buffers: takes[slot] = recorded frames in time order. */
+  private takes: TakeFrame[][] = []
   /** Per-slot One-Euro smoothers that de-jitter landmarks for steadier scoring/overlay. */
   private worldSmoothers: LandmarkSmoother[] = []
   private imageSmoothers: LandmarkSmoother[] = []
@@ -124,8 +134,8 @@ export class PracticeEngine {
     this.recording = true
   }
 
-  /** Stop buffering and return the captured angle vectors per slot (in time order). */
-  stopRecording(): number[][][] {
+  /** Stop buffering and return the captured frames per slot (in time order). */
+  stopRecording(): TakeFrame[][] {
     this.recording = false
     return this.takes
   }
@@ -199,7 +209,7 @@ export class PracticeEngine {
             this.rollingPer[i] = (this.rollingPer[i] ?? 0) * 0.8 + cmp.score * 0.2
             if (this.recording) {
               const buf = (this.takes[i] ??= [])
-              buf.push(liveAngles)
+              buf.push({ t: ref.timeSec, angles: liveAngles })
               if (buf.length > MAX_TAKE_FRAMES) buf.shift()
             }
           }
