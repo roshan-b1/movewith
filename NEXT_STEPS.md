@@ -15,12 +15,14 @@ deliberate "do later" so the current app stays focused.
   (tap to place cuts) stays the primary path. Tuning knobs in `segment.ts`: `CONTRAST_FLOOR`
   (raise = fewer/coarser cuts) and `MIN_DISTINCT_DEG` (how many degrees of joint movement
   separate "same move, jittered" from "new move") — worth revisiting against real footage.
-- **Thorough step-direction detection — PARTIALLY BUILT.** Each segment now gets a
-  kinematic character label (`core/reference/describe.ts`): which limbs carry the move
-  (Arms / Footwork / Full body), whether it travels across the frame, and a repeat count
-  from pose self-matching (e.g. "Footwork · 4×"). Shown on the practice badge and as
-  part-picker tooltips in the rater. Still future: naming actual steps (grapevine,
-  bodyroll, …) — that needs a labeled move dataset.
+- **Thorough step-direction detection — BUILT but NOT SHOWN.** `core/reference/describe.ts`
+  derives a kinematic character per segment: which limbs carry the move (Arms / Footwork /
+  Full body), whether it travels across the frame, and a repeat count from pose
+  self-matching. It was surfaced on the practice badge and as rater tooltips, and pulled
+  back out: labels like "Arms · travels" are too vague to be worth the clutter while you're
+  trying to learn a move. The module and its tests stay for when there's something worth
+  saying. That needs real step NAMING (grapevine, bodyroll, …), which needs a labeled move
+  dataset — the honest blocker.
 - **Auto-detect dancing vs talking — BUILT.** Sustained stretches where the legs sit
   near-still read as explanation, not dancing (`core/reference/talking.ts`); auto-detect
   pre-skips those segments with an undo toast. Validated: an all-dance real video gets zero

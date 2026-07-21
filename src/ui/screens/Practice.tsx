@@ -16,7 +16,6 @@ import {
   autoMoveBounds,
 } from '../../core/reference/segment'
 import { detectTalkingRanges, overlapFraction } from '../../core/reference/talking'
-import { describeMove } from '../../core/reference/describe'
 import { VoiceController, type VoiceCommand } from '../../engine/voice'
 import { BeatMusic } from '../../engine/beatMusic'
 import { drawSkeleton, drawHumanFigure, worldProjector, containProjector, coverProjector } from '../components/drawSkeleton'
@@ -182,12 +181,6 @@ export function Practice() {
 
   const moves = useMemo(() => buildMovesFromBounds(trimStart, trimEnd, moveBounds), [trimStart, trimEnd, moveBounds])
   const ticks = useMemo(() => moveTicks(moves), [moves])
-  // What each segment's move is like (which limbs, travels, repeats) — shown as a small
-  // label so segments read as moves, not just numbers.
-  const moveLabels = useMemo(
-    () => moves.map((m) => describeMove(track.frames, m.startSec, m.endSec)?.label ?? null),
-    [moves, track],
-  )
 
   // The tracked "slots" for Test my skills: the chosen reference dancers ordered as they
   // appear on screen (left → right), so a group just stands the way the video looks.
@@ -1311,11 +1304,6 @@ export function Practice() {
         {inGo && !camMain && (
           <span className="absolute left-3 top-3 z-20 rounded-2xl bg-brand px-3 py-2 font-display text-sm font-bold text-cream shadow-glow">
             {fullRun ? 'Full song' : `Segment ${moveIdx + 1} of ${moves.length}`}
-            {!fullRun && moveLabels[moveIdx] && (
-              <span className="block text-[10px] font-semibold uppercase tracking-wider text-cream/80">
-                {moveLabels[moveIdx]}
-              </span>
-            )}
           </span>
         )}
         {/* Editor preview: which segment is playing. */}
@@ -1529,7 +1517,6 @@ export function Practice() {
                     key={m.index}
                     onClick={() => { raterQueueRef.current = []; startRating(m.startSec, m.endSec) }}
                     disabled={camStatus !== 'ready'}
-                    title={moveLabels[m.index] ?? undefined}
                     className="rounded-xl border border-line bg-ink/[0.06] px-4 py-2 text-sm font-semibold text-ink/80 transition hover:border-brand2/60 hover:text-ink active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {m.index + 1}
