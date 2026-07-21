@@ -31,33 +31,42 @@ describe('evenMoveBounds', () => {
 })
 
 describe('autoMoveBounds', () => {
-  it('falls back to an even split when there is no motion data', () => {
+  it('falls back to an even split when there is no pose data', () => {
     expect(autoMoveBounds([], 0, 12, 4)).toEqual([4, 8])
   })
 
-  it('snaps a cut onto a low-motion hold near the even target', () => {
-    // Span 0..4, target 2s → 1 even cut at t=2. Motion is high everywhere except a
-    // hold (constant angle) around t=2.2, so the cut should land there, not at 2.0.
-    const fs = frames(4, 0.1, (t) => (t > 2.0 && t < 2.4 ? 50 : 50 + 30 * Math.sin(t * 20)))
-    const bounds = autoMoveBounds(fs, 0, 4, 2)
+  it('cuts where the movement changes into a new phrase', () => {
+    // Two 8s phrases with different pose content → one cut at the change (~t=8).
+    const fs = frames(16, 0.1, (t) => (t < 8 ? 0 : 1))
+    const bounds = autoMoveBounds(fs, 0, 16, 8)
     expect(bounds).toHaveLength(1)
-    expect(bounds[0]!).toBeGreaterThan(1.9)
-    expect(bounds[0]!).toBeLessThan(2.45)
+    expect(bounds[0]!).toBeGreaterThan(6.5)
+    expect(bounds[0]!).toBeLessThan(9.5)
   })
 
-  it('produces roughly the requested number of moves', () => {
-    const fs = frames(12, 0.1, (t) => 50 + 30 * Math.sin(t * 6))
-    const bounds = autoMoveBounds(fs, 0, 12, 4) // ~3 moves → ~2 cuts
-    expect(bounds.length).toBeGreaterThanOrEqual(1)
-    expect(bounds.length).toBeLessThanOrEqual(2)
+  it('leaves a repeated move whole (no cut inside a repeat)', () => {
+    // A short motion repeated the whole time (period 2s ≪ target) is one phrase → no cut.
+    const fs = frames(16, 0.1, (t) => (Math.floor(t) % 2 === 0 ? 0 : 1))
+    expect(autoMoveBounds(fs, 0, 16, 8)).toEqual([])
+  })
+
+  it('cuts each distinct phrase in a three-phrase clip', () => {
+    // Three different 8s phrases → cuts at both changes (~8, ~16).
+    const fs = frames(24, 0.1, (t) => (t < 8 ? 0 : t < 16 ? 1 : 2))
+    const bounds = autoMoveBounds(fs, 0, 24, 8)
+    expect(bounds).toHaveLength(2)
+    expect(bounds[0]!).toBeGreaterThan(6.5)
+    expect(bounds[0]!).toBeLessThan(9.5)
+    expect(bounds[1]!).toBeGreaterThan(14.5)
+    expect(bounds[1]!).toBeLessThan(17.5)
   })
 
   it('keeps cuts strictly inside the range and increasing', () => {
-    const fs = frames(12, 0.1, (t) => 50 + 30 * Math.sin(t * 6))
-    const bounds = autoMoveBounds(fs, 0, 12, 3)
+    const fs = frames(24, 0.1, (t) => (t < 8 ? 0 : t < 16 ? 1 : 2))
+    const bounds = autoMoveBounds(fs, 0, 24, 8)
     for (const b of bounds) {
       expect(b).toBeGreaterThan(0)
-      expect(b).toBeLessThan(12)
+      expect(b).toBeLessThan(24)
     }
     const sorted = bounds.slice().sort((a, b) => a - b)
     expect(bounds).toEqual(sorted)
@@ -78,37 +87,21 @@ describe('beatTimes', () => {
   })
 })
 
-describe('autoMoveBounds — beat-aligned', () => {
+describe('autoMoveBounds — beat alignment', () => {
   const tempo = makeTempo(120, 0) // 0.5s/beat
 
-  it('places every cut exactly on a beat', () => {
-    // 24s at 120bpm, ~4s moves → 8 beats/segment. Cuts must be multiples of 0.5s.
-    const fs = frames(24, 0.1, (t) => 50 + 30 * Math.sin(t * 6))
-    const bounds = autoMoveBounds(fs, 0, 24, 4, tempo)
-    expect(bounds.length).toBeGreaterThanOrEqual(4)
-    for (const b of bounds) expect(Math.round(b / 0.5) * 0.5).toBeCloseTo(b, 6)
+  it('snaps a detected phrase change onto the beat grid', () => {
+    // Two phrases change at ~t=12; with a tempo the cut lands on a beat (multiple of 0.5).
+    const fs = frames(24, 0.1, (t) => (t < 12 ? 0 : 1))
+    const bounds = autoMoveBounds(fs, 0, 24, 8, tempo)
+    expect(bounds).toHaveLength(1)
+    expect(Math.round(bounds[0]! / 0.5) * 0.5).toBeCloseTo(bounds[0]!, 6)
+    expect(bounds[0]!).toBeGreaterThan(11)
+    expect(bounds[0]!).toBeLessThan(13)
   })
 
-  it('spaces segments to about the target length', () => {
-    const fs = frames(24, 0.1, () => 50)
-    const bounds = autoMoveBounds(fs, 0, 24, 4, tempo) // ~4s → 8 beats apart = 4s
-    const cuts = [0, ...bounds, 24]
-    for (let i = 1; i < cuts.length; i++) {
-      const len = cuts[i]! - cuts[i - 1]!
-      expect(len).toBeGreaterThan(2.5)
-      expect(len).toBeLessThan(5.5)
-    }
-  })
-
-  it('nudges a boundary onto the quietest nearby beat (a hold)', () => {
-    // 8 beats/seg → first boundary near beat 8 (t=4). Make beat 7 (t=3.5) a dead hold
-    // while everything else moves; the cut should snap back to 3.5, not sit at 4.0.
-    const fs = frames(24, 0.1, (t) => (t > 3.35 && t < 3.65 ? 50 : 50 + 40 * Math.sin(t * 25)))
-    const bounds = autoMoveBounds(fs, 0, 24, 4, tempo)
-    expect(bounds[0]!).toBeCloseTo(3.5, 6)
-  })
-
-  it('works beat-only for playback tracks (tempo but no frames)', () => {
+  it('splits playback-only tracks on the beat grid (tempo but no pose)', () => {
+    // No pose data → fall back to a beat-aligned split. Cuts must be multiples of 0.5s.
     const bounds = autoMoveBounds([], 0, 24, 4, tempo)
     expect(bounds.length).toBeGreaterThanOrEqual(4)
     for (const b of bounds) expect(Math.round(b / 0.5) * 0.5).toBeCloseTo(b, 6)

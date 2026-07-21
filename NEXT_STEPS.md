@@ -5,13 +5,18 @@ deliberate "do later" so the current app stays focused.
 
 ## Practice / learning flow
 
-- **Smarter segment auto-generation.** Auto-detect now aligns cuts to the song's beat grid
-  (~target length in beats) and snaps each to the quietest nearby beat — musical and much
-  better than the old even-spacing. Next level: recognize the actual move/step in each segment
-  (see below) so boundaries land on real step transitions, not just quiet beats. The manual
-  segment creator (tap to place cuts) stays the primary path.
-- **Thorough step-direction detection.** Recognize the actual dance step in each segment, not
-  just split by time. Feeds the auto-generation above.
+- **Smarter segment auto-generation.** Auto-detect now cuts on *distinct-movement* changes: a
+  pose self-similarity novelty curve (Foote checkerboard, kernel ≈ one target segment) fires
+  only where the body's pose content shifts into a new phrase, and repeated motion is left
+  whole because a repeat looks self-similar (low novelty). Cuts snap to the beat when a tempo
+  is known; playback-only tracks fall back to a beat/even split. Result: each segment is a
+  short phrase of a few moves, not a time slice, and a move done several times isn't chopped.
+  Next level: name/classify the actual step in each segment (below). The manual segment creator
+  (tap to place cuts) stays the primary path. Tuning knob: `CONTRAST_FLOOR` in `segment.ts`
+  (raise = fewer/coarser cuts, lower = more sensitive) — worth revisiting against real footage.
+- **Thorough step-direction detection.** Recognize/label the actual dance step in each segment
+  (which move it is, its direction), not just detect where it changes. Builds on the novelty
+  boundaries above.
 - **Auto-detect dancing vs talking.** Find the dance parts of a tutorial automatically and a
   mode that jumps straight to them (skips intros/explanations without manual cutting).
 - **Smarter segment drilling.** Per-segment replay counts, an explicit "mark complete" beyond

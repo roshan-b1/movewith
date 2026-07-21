@@ -116,10 +116,8 @@ export function Practice() {
   const [moveSec] = useState<number>(savedSetup?.moveSec ?? 8)
   const [reps, setReps] = useState<number>(savedSetup?.reps ?? Infinity)
   const [breakSecs, setBreakSecs] = useState<number>(savedSetup?.breakSecs ?? 3)
-  // Camera turns on in two places, never in plain practice:
-  //  - selfView: dance beside yourself and watch each take replay (NO scoring).
-  //  - rating ("Test my skills"): the pose engine scores you.
-  const [selfView, setSelfView] = useState(savedSetup?.selfView ?? false)
+  // The camera turns on in exactly one place — the rater ("Test my skills"), where the pose
+  // engine scores you and records your take. Plain practice never touches the camera.
   const [rating, setRating] = useState(false)
   const scoring = rating && !playbackOnly
   const [completed, setCompleted] = useState<number[]>([])
@@ -139,9 +137,6 @@ export function Practice() {
   const [playing, setPlaying] = useState(false)
   const [rate, setRate] = useState(1)
   const [mirror, setMirror] = useState(false)
-  // Draw the tracked skeleton over the instructor. Never shown while cutting segments;
-  // toggleable in practice/test in case the tracking is off for a video.
-  const [tracking, setTracking] = useState(true)
   const [previewIdx, setPreviewIdx] = useState(-1) // segment being loop-previewed in the editor
   const [creating, setCreating] = useState(false) // segment-creator mode (tap to place cuts)
   const [meter, setMeter] = useState(0)
@@ -149,14 +144,13 @@ export function Practice() {
   const [camError, setCamError] = useState<string | null>(null)
   const [noBody, setNoBody] = useState(false)
   // segMode drives what the stage is doing:
-  //  - 'watch'   plain practice (loop, Got it) — no camera
-  //  - 'selftry' self-view: dance the segment once beside your live camera (recording)
+  //  - 'watch'   plain practice (loop, Got it) — no camera, no tracking, no recording
   //  - 'menu'    the rater's pick-what-to-rate screen
-  //  - 'test'    the rater: dance a range once, being scored
+  //  - 'test'    the rater: dance a range once, being scored + recorded (reference audio only)
   //  - 'results' single-segment score + tips
   //  - 'summary' full run-through recap (per-segment grades)
-  //  - 'replay'  side-by-side: instructor + your recorded take
-  const [segMode, setSegMode] = useState<'watch' | 'selftry' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
+  //  - 'replay'  side-by-side: instructor + your recorded take (watch yourself back)
+  const [segMode, setSegMode] = useState<'watch' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
   const [testResult, setTestResult] = useState<DetailedSectionScore | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
   const [runSummary, setRunSummary] = useState<RunSummary | null>(null)
@@ -164,8 +158,6 @@ export function Practice() {
   const [takeUrl, setTakeUrl] = useState<string | null>(null)
   // The camera owns the whole stage while the rater scores you.
   const camMain = scoring && (segMode === 'test' || segMode === 'results')
-  // Self-view live pass: instructor left, your live camera right.
-  const selfTrying = segMode === 'selftry'
   // Side-by-side replay: instructor on the left, your recorded take on the right.
   const replaying = phase === 'go' && segMode === 'replay' && !!takeUrl
   const [toast, setToast] = useState<string | null>(null)
@@ -198,7 +190,6 @@ export function Practice() {
   const camRef = useRef<CameraHandle | null>(null)
   const trackRef = useRef<ReferenceTrack>(track)
   const mirrorRef = useRef(mirror)
-  const trackingRef = useRef(true)
   const movesRef = useRef<Move[]>(moves)
   const moveIdxRef = useRef(0)
   const trimStartRef = useRef(0)
@@ -222,20 +213,17 @@ export function Practice() {
   const rateRef = useRef(rate)
   const scoringRef = useRef(scoring)
   const ratingRef = useRef(false)
-  const selfViewRef = useRef(false)
   const completedRef = useRef<number[]>([])
   const countdownTimerRef = useRef<number | null>(null)
   const voiceHandlerRef = useRef<(c: VoiceCommand) => void>(() => {})
-  const segModeRef = useRef<'watch' | 'selftry' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
-  /** True while a single-pass take is being recorded (segment playing once through) —
-   *  used by both the rater ('test') and self-view ('selftry'). */
+  const segModeRef = useRef<'watch' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
+  /** True while the rater is recording a single scored pass (the segment playing once through). */
   const testActiveRef = useRef(false)
   /** Full run-through state: the queue of segment indices to score, and the scores so far. */
   const raterQueueRef = useRef<number[]>([])
   const raterPosRef = useRef(0)
   const runScoresRef = useRef<{ index: number; score: number; worstLimb: Limb | null }[]>([])
   const finishTestRef = useRef<() => void>(() => {})
-  const finishSelfTryRef = useRef<() => void>(() => {})
   const cancelTestRef = useRef<() => void>(() => {})
   const recorderRef = useRef<MediaRecorder | null>(null)
   const takeChunksRef = useRef<Blob[]>([])
@@ -252,12 +240,6 @@ export function Practice() {
     if (pb) pb.seek(pb.getTime())
   }, [mirror])
   useEffect(() => void (phaseRef.current = phase), [phase])
-  useEffect(() => {
-    trackingRef.current = tracking
-    // Redraw immediately so the overlay clears/appears without waiting for playback.
-    const pb = playbackRef.current
-    if (pb) pb.seek(pb.getTime())
-  }, [tracking])
   useEffect(() => { trimStartRef.current = trimStart; trimEndRef.current = trimEnd }, [trimStart, trimEnd])
   // Keep skip state + the controller's skip ranges (for full-song playback) in sync.
   useEffect(() => {
@@ -274,10 +256,10 @@ export function Practice() {
     const id = window.setTimeout(() => {
       const cur = useSession.getState().progress
       const base = cur ?? { trackId: track.id, bestSectionScores: {}, unlockedThrough: 0 }
-      void updateProgress({ ...base, setup: { trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, selfView, skip } })
+      void updateProgress({ ...base, setup: { trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, skip } })
     }, 500)
     return () => window.clearTimeout(id)
-  }, [trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, selfView, skip, track.id, updateProgress])
+  }, [trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, skip, track.id, updateProgress])
   useEffect(() => void (creatingRef.current = creating), [creating])
   useEffect(() => void (movesRef.current = moves), [moves])
   useEffect(() => void (moveIdxRef.current = moveIdx), [moveIdx])
@@ -285,7 +267,6 @@ export function Practice() {
   useEffect(() => void (breakRef.current = breakSecs), [breakSecs])
   useEffect(() => void (scoringRef.current = scoring), [scoring])
   useEffect(() => void (ratingRef.current = rating), [rating])
-  useEffect(() => void (selfViewRef.current = selfView), [selfView])
   useEffect(() => {
     rateRef.current = rate
     const cfg = rate < 1 ? LOOSE : STRICT
@@ -396,17 +377,8 @@ export function Practice() {
             }
           })
         }
-        // The skeleton overlay belongs to practicing/testing — never while cutting
-        // segments (the bounds step is about the video, not the tracking), and it can
-        // be toggled off entirely if the tracking is bad for a particular video.
-        else if (frame?.image && trackingRef.current && phaseRef.current === 'go') {
-          drawSkeleton(ctx, frame.image, {
-            project: containProjector(vw, vh),
-            baseColor: 'rgba(34,211,238,0.95)',
-            lineWidth: Math.max(2.5, w * 0.005),
-            jointRadius: Math.max(2.5, w * 0.005),
-          })
-        }
+        // Practice never draws a tracked skeleton over the instructor — it's just watch
+        // and try. Tracking lives only in "Test my skills" (on your own camera).
         ctx.restore()
       } else {
         const canvas = instructorCanvasRef.current
@@ -450,10 +422,9 @@ export function Practice() {
         pb.pause()
         if (testActiveRef.current) {
           // A single recorded pass plays the segment exactly once — the wrap is the finish
-          // line. Scoring pass → grade it; self-view pass → jump to the replay.
+          // line. Grade it (and keep the take for the watch-yourself-back replay).
           testActiveRef.current = false
-          if (scoringRef.current) finishTestRef.current()
-          else finishSelfTryRef.current()
+          finishTestRef.current()
         } else if (segModeRef.current === 'replay') {
           // Side-by-side replay ran the segment once; hold at the end for ▶ Replay.
           // (The take video simply ends on its own.)
@@ -501,11 +472,10 @@ export function Practice() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Camera + pose engine. Runs when self-view or the rater is on, and ONLY once you're
-  // actually practicing (phase 'go') — never during setup or segment cutting. The pose
-  // engine only starts when scoring (rating); self-view just needs the raw stream.
+  // Camera + pose engine. Runs ONLY in the rater ("Test my skills"), and only once you're
+  // actually there (phase 'go') — never during setup, segment cutting, or plain practice.
   useEffect(() => {
-    if ((!selfView && !rating) || playbackOnly || phase !== 'go') return
+    if (!rating || playbackOnly || phase !== 'go') return
     let cam: CameraHandle | null = null
     let disposed = false
     const getReference = (): ReferenceContext => {
@@ -574,7 +544,7 @@ export function Practice() {
       ;(camRef.current ?? cam)?.stop(); camRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [track.id, rating, selfView, playbackOnly, phase])
+  }, [track.id, rating, playbackOnly, phase])
 
   useEffect(() => {
     const cs = [instructorCanvasRef.current, instructorOverlayRef.current, webcamCanvasRef.current].filter(
@@ -585,7 +555,7 @@ export function Practice() {
     const ro = new ResizeObserver(() => cs.forEach(sizeCanvas))
     cs.forEach((c) => ro.observe(c))
     return () => ro.disconnect()
-  }, [videoUrl, rating, selfView, camStatus, phase, segMode])
+  }, [videoUrl, rating, camStatus, phase, segMode])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -600,13 +570,13 @@ export function Practice() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase])
 
-  // Keep the preview element actually playing whenever it's on screen (side-by-side self
-  // view or fullscreen test). Some browsers park a video that was display:none, so nudge it
-  // on every visibility change — the dancer must ALWAYS see themselves.
+  // Keep the live camera element actually playing whenever it's on screen (fullscreen test
+  // or the menu tile). Some browsers park a video that was display:none, so nudge it on every
+  // visibility change — the dancer must always see themselves during the test.
   useEffect(() => {
     if (camMain || !replaying) void webcamVideoRef.current?.play().catch(() => { /* not ready yet */ })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [camMain, replaying, selfTrying, camStatus])
+  }, [camMain, replaying, camStatus])
 
   // Opened straight into "Test my skills" from the library: jump past setup into the rater
   // menu once the video is mounted. Runs once.
@@ -620,15 +590,6 @@ export function Practice() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // Self-view: once a recorded take is ready, auto-play the side-by-side replay.
-  useEffect(() => {
-    if (segMode === 'replay' && takeUrl && selfViewRef.current && !ratingRef.current) {
-      const id = window.setTimeout(() => replayBoth(), 90)
-      return () => window.clearTimeout(id)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [takeUrl, segMode])
 
   // Tidy up the take recording on unmount (stop the recorder, free the blob URL).
   useEffect(() => () => {
@@ -799,16 +760,6 @@ export function Practice() {
   }
   finishTestRef.current = finishTest
 
-  /** Self-view: a recorded single pass of a segment ended — go straight to the replay so
-   *  you can see how you looked. No scoring here. */
-  function finishSelfTry() {
-    playbackRef.current?.pause()
-    setPlaying(false)
-    stopTakeRecording(true) // onstop builds the take URL; an effect auto-plays the replay
-    setSegMode('replay'); segModeRef.current = 'replay'
-  }
-  finishSelfTryRef.current = finishSelfTry
-
   function cancelTest() {
     clearCountdown()
     testActiveRef.current = false
@@ -820,32 +771,6 @@ export function Practice() {
     setSegMode('menu'); segModeRef.current = 'menu'
   }
   cancelTestRef.current = cancelTest
-
-  // ===== Self-view practice: dance beside yourself, then replay each take (no scoring) =====
-
-  /** Record one pass of a segment while you dance beside your live camera. */
-  function startSelfTry(idx: number) {
-    const list = movesRef.current
-    const i = Math.max(0, Math.min(idx, list.length - 1))
-    const m = list[i]
-    if (!m) return
-    clearCountdown()
-    const pb = playbackRef.current
-    if (!pb) return
-    pb.pause(); setPlaying(false)
-    dropTakeRecording()
-    setMoveIdx(i); moveIdxRef.current = i
-    setSegMode('selftry'); segModeRef.current = 'selftry'
-    setLoopRegion(m.startSec, m.endSec)
-    runCountdown(() => {
-      const p = playbackRef.current
-      if (!p) return
-      prevTimeRef.current = m.startSec
-      testActiveRef.current = true
-      startTakeRecording() // camera only — no pose engine, no scoring
-      p.play(); setPlaying(true)
-    }, 'Dance in', 3)
-  }
 
   // ---- Side-by-side replay: the reference segment and YOUR recorded take, together ----
 
@@ -1242,18 +1167,10 @@ export function Practice() {
             </div>
           </div>
           {!playbackOnly && (
-            <div>
-              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Camera</p>
-              <div className="flex gap-2">
-                <button onClick={() => setSelfView(false)} className={chip(!selfView)}>Off · just follow</button>
-                <button onClick={() => setSelfView(true)} className={chip(selfView)}>See myself dance</button>
-              </div>
-              <p className="mt-2 text-xs text-ink/45">
-                {selfView
-                  ? 'You dance beside your own camera, and each take replays so you can see how you looked.'
-                  : 'Just watch and drill. No scoring here — that lives in 🎯 Test my skills, on its own.'}
-              </p>
-            </div>
+            <p className="text-xs text-ink/45">
+              Just watch and drill — no camera here. When you're ready, 🎯 Test my skills turns on
+              your camera, records you, and scores it so you can watch yourself back.
+            </p>
           )}
         </div>
 
@@ -1326,10 +1243,10 @@ export function Practice() {
         {/* Mirror is done by flipping the CANVAS draw (see drawInstructor), never by
             CSS-transforming the <video> — that tore into a split-screen on Windows. When
             mirrored the canvas paints the flipped video over the (untouched) <video>.
-            During a camera test the reference layers go invisible (NOT unmounted — the
-            video keeps playing so its music drives your take). In side-by-side replay
-            they shrink to the LEFT HALF, with your recorded take on the right. */}
-        <div className={camMain ? 'pointer-events-none absolute inset-0 opacity-0' : (replaying || selfTrying || (inGo && selfView && segMode === 'watch')) ? 'absolute inset-y-0 left-0 w-1/2' : 'absolute inset-0'}>
+            During a camera test the reference video goes invisible (NOT unmounted — it keeps
+            playing so ONLY its sound drives your take, never the picture). In side-by-side
+            replay it shrinks to the LEFT HALF, with your recorded take on the right. */}
+        <div className={camMain ? 'pointer-events-none absolute inset-0 opacity-0' : replaying ? 'absolute inset-y-0 left-0 w-1/2' : 'absolute inset-0'}>
           {videoUrl ? (
             <>
               <video
@@ -1377,18 +1294,16 @@ export function Practice() {
             instructor) during self-view and self-view takes; a small corner tile on the rater
             menu. Hidden during side-by-side replay (your recorded take is on screen there).
             Stays mounted so the stream stays warm. */}
-        {inGo && (selfView || rating) && (
+        {inGo && rating && (
           <div
             className={
               camMain
                 ? 'absolute inset-0 z-10 bg-black'
-                : (selfTrying || (selfView && segMode === 'watch'))
-                  ? 'absolute inset-y-0 right-0 z-10 w-1/2 border-l border-line bg-black'
-                  : replaying
-                    ? 'hidden'
-                    : rating && segMode === 'menu'
-                      ? 'absolute bottom-3 right-3 z-10 h-36 w-28 overflow-hidden rounded-2xl border border-line bg-black shadow-soft sm:h-44 sm:w-36'
-                      : 'hidden'
+                : replaying
+                  ? 'hidden'
+                  : segMode === 'menu'
+                    ? 'absolute bottom-3 right-3 z-10 h-36 w-28 overflow-hidden rounded-2xl border border-line bg-black shadow-soft sm:h-44 sm:w-36'
+                    : 'hidden'
             }
           >
             <div className="mirror absolute inset-0">
@@ -1417,11 +1332,6 @@ export function Practice() {
                 )}
                 <div className="absolute inset-x-4 bottom-3"><AccuracyMeter score={meter} compact label="Match" /></div>
               </>
-            )}
-            {selfTrying && (
-              <span className="absolute left-2 top-2 z-20 flex items-center gap-1.5 rounded-xl bg-black/60 px-2.5 py-1 text-xs font-bold text-cream backdrop-blur">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-bad" /> Recording
-              </span>
             )}
           </div>
         )}
@@ -1734,15 +1644,6 @@ export function Practice() {
               ))}
             </div>
             <button onClick={() => setMirror((m) => !m)} className={mirror ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}>🪞 Mirror</button>
-            {hasFrames && !!videoUrl && (
-              <button
-                onClick={() => setTracking((v) => !v)}
-                className={tracking ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}
-                title="Show or hide the tracked skeleton on the instructor"
-              >
-                🦴 Tracking
-              </button>
-            )}
             <button onClick={playAll} className={fullRun ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn} title="Practice the whole song start to finish">▶ Full song</button>
             <button onClick={editSegments} className={btn} title="Go back and edit the segments">✎ Edit segments</button>
             {voiceSupported && (
@@ -1754,11 +1655,6 @@ export function Practice() {
           <div className="flex flex-wrap items-center justify-center gap-2">
             <button onClick={() => gotoMove(nextOpen(moveIdx, -1))} className={btn + ' !px-3'}>‹ prev</button>
             <button onClick={repeatMove} className="rounded-xl border border-line bg-ink/[0.06] px-5 py-2.5 text-sm font-semibold text-ink/80 transition hover:text-ink active:scale-95">↻ Repeat</button>
-            {selfView && !playbackOnly && (
-              <button onClick={() => startSelfTry(moveIdxRef.current)} className="rounded-xl border border-brand2/50 bg-brand2/15 px-4 py-2.5 text-sm font-bold text-ink transition hover:bg-brand2/25 active:scale-95" title="Dance this segment once and watch it back">
-                🎬 Record my take
-              </button>
-            )}
             <button onClick={completeSegment} className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95">
               ✓ Got it
             </button>
@@ -1783,11 +1679,7 @@ export function Practice() {
             {toast ? (
               <span className="rounded-full bg-good/20 px-3 py-1 font-semibold text-good">{toast}</span>
             ) : (
-              <span className="text-ink/40">
-                {selfView
-                  ? 'Dance beside yourself, then 🎬 Record my take to watch it back.'
-                  : 'Drill this segment, then ✓ Got it for the next one.'}
-              </span>
+              <span className="text-ink/40">Drill this segment, then ✓ Got it for the next one.</span>
             )}
           </div>
         </>
@@ -1796,37 +1688,23 @@ export function Practice() {
           <button onClick={replayBoth} className="rounded-xl bg-brand px-6 py-2.5 text-sm font-semibold text-cream shadow-glow transition hover:brightness-105 active:scale-95">
             ▶ Replay
           </button>
-          {selfView && !rating ? (
-            <>
-              <button onClick={() => startSelfTry(moveIdxRef.current)} className={btn}>↻ Record again</button>
-              <button
-                onClick={() => { exitTestFlow(); completeSegment() }}
-                className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
-              >
-                Next segment ›
-              </button>
-            </>
-          ) : (
-            <>
-              <button onClick={backToResults} className={btn}>‹ Back to feedback</button>
-              <button
-                onClick={exitRating}
-                className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
-              >
-                ✓ Done
-              </button>
-            </>
-          )}
+          <button onClick={backToResults} className={btn}>‹ Back to feedback</button>
+          <button
+            onClick={exitRating}
+            className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
+          >
+            ✓ Done
+          </button>
         </div>
       ) : (
         <div className="flex min-h-[24px] items-center justify-center text-sm">
           <span className="text-ink/40">
-            {segMode === 'menu' ? 'Pick what to test.' : segMode === 'test' ? '🎥 Dance it — you’re being scored.' : segMode === 'selftry' ? '🎬 Dance the segment — recording your take.' : segMode === 'summary' ? 'Your run recap is above.' : 'Check your feedback above.'}
+            {segMode === 'menu' ? 'Pick what to test.' : segMode === 'test' ? '🎥 Dance it — you’re being scored and recorded.' : segMode === 'summary' ? 'Your run recap is above.' : 'Check your feedback above.'}
           </span>
         </div>
       )}
 
-      {(selfView || rating) && cameras.length > 0 && (
+      {rating && cameras.length > 0 && (
         <div className="flex justify-center">
           <select value={activeCam ?? ''} onChange={(e) => void switchCamera(e.target.value)} className="max-w-[240px] truncate rounded-xl border border-line bg-panel px-2 py-1.5 text-xs text-ink/80 outline-none">
             {cameras.map((c, i) => <option key={c.deviceId || i} value={c.deviceId}>{c.label || `Camera ${i + 1}`}</option>)}

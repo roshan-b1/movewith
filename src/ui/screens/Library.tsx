@@ -125,7 +125,7 @@ export function Library() {
             {
               n: '4',
               t: 'Then test yourself',
-              d: 'Turn the camera on to dance beside yourself and watch each take play back. When you are ready, Test my skills scores each part and shows which you nailed and which to keep drilling.',
+              d: 'Practice stays camera-free — just watch and drill. When you are ready, Test my skills turns on the camera, records you dancing to the music, scores each part, and plays your take back so you can see how you looked.',
             },
           ].map((s) => (
             <li key={s.n} className="rounded-2.5xl border border-line bg-panel/60 p-4">

@@ -187,44 +187,212 @@ function beatAlignedBounds(
   return out
 }
 
-/** Motion-only fallback (no tempo): even targets nudged onto nearby low-motion instants. */
-function motionMoveBounds(frames: ReferenceFrame[], start: number, end: number, n: number): number[] {
+// ---- Distinct-movement detection (pose novelty) --------------------------------------
+//
+// A "move" is a stretch of choreography with its own pose content; a new move begins when
+// that content changes into something different. Repeating the same motion is NOT a new move
+// (the body keeps visiting the same poses), so a repeat should stay in one segment.
+//
+// We capture both with a self-similarity novelty curve (Foote): sample each frame's pose,
+// compare every pair, and slide a checkerboard kernel down the diagonal. Where the block
+// BEFORE an instant is self-similar, the block AFTER is self-similar, but the two are
+// UNLIKE each other, novelty peaks — a genuine change of movement. A repeated phrase makes
+// the before/after blocks look alike, so novelty stays flat and no cut is placed. The kernel
+// spans ~one target segment, so each cut opens a new short phrase (a few moves), not a
+// single gesture, and repeats within that span are absorbed rather than chopped.
+
+const MAX_SAMPLES = 200 // cap the O(n²) similarity matrix; plenty of detail for a clip
+const CONTRAST_FLOOR = 0.07 // min before/after pose contrast (0..1) to call it a real change
+
+interface PoseSamples {
+  times: number[]
+  feats: number[][] // per-sample standardized joint-angle vector
+}
+
+/** Uniformly resample the window's joint-angle vectors (standardized per dimension). */
+function samplePoses(frames: ReferenceFrame[], start: number, end: number): PoseSamples | null {
+  const win = frames.filter((f) => f.t >= start && f.t <= end)
+  if (win.length < 8) return null
+  const dims = win.reduce((m, f) => Math.min(m, f.angles.length), Infinity)
+  if (!(dims >= 1)) return null
+
   const span = end - start
-  const even: number[] = []
-  for (let k = 1; k < n; k++) even.push(start + (k * span) / n)
-
-  const series = motionSeries(frames, start, end)
-  if (series.length < 4) return even // no usable motion signal → even split
-
-  const sm = smooth(series.map((s) => s.m), 2)
-  const sliceLen = span / n
-  const window = Math.min(sliceLen * 0.45, 2.5)
-  const minGap = sliceLen * 0.4
-
-  const out: number[] = []
-  let last = start
-  for (const target of even) {
-    let bestT = target
-    let bestVal = Infinity
-    for (let i = 0; i < series.length; i++) {
-      const t = series[i]!.t
-      if (t < target - window || t > target + window) continue
-      if (sm[i]! < bestVal) { bestVal = sm[i]!; bestT = t }
-    }
-    let t = bestT
-    if (t < last + minGap) t = Math.min(target, end - minGap)
-    if (t < last + minGap || t > end - minGap) continue
-    out.push(t)
-    last = t
+  const n = Math.min(MAX_SAMPLES, win.length)
+  const times: number[] = []
+  const feats: number[][] = []
+  let wi = 0
+  for (let k = 0; k < n; k++) {
+    const t = start + ((k + 0.5) * span) / n
+    // Advance to the window frame nearest t (win is time-ordered).
+    while (wi + 1 < win.length && Math.abs(win[wi + 1]!.t - t) <= Math.abs(win[wi]!.t - t)) wi++
+    const f = win[wi]!
+    times.push(f.t)
+    feats.push(f.angles.slice(0, dims))
   }
-  return out.length ? out : even
+  // Standardize each angle dimension so all joints weigh in comparably.
+  for (let d = 0; d < dims; d++) {
+    let mean = 0
+    for (const v of feats) mean += v[d]!
+    mean /= feats.length
+    let varr = 0
+    for (const v of feats) varr += (v[d]! - mean) ** 2
+    const sd = Math.sqrt(varr / feats.length)
+    for (const v of feats) v[d] = sd > 1e-6 ? (v[d]! - mean) / sd : 0
+  }
+  return { times, feats }
+}
+
+/** Symmetric pose-similarity matrix in (0,1]; 1 = identical pose. */
+function similarityMatrix(feats: number[][]): number[][] {
+  const n = feats.length
+  // Scale distances by the average squared distance so contrast is data-relative.
+  let sum = 0
+  let cnt = 0
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let d = 0
+      const a = feats[i]!
+      const b = feats[j]!
+      for (let k = 0; k < a.length; k++) d += (a[k]! - b[k]!) ** 2
+      sum += d
+      cnt++
+    }
+  }
+  const scale = Math.max(sum / Math.max(cnt, 1), 1e-6)
+  const S: number[][] = Array.from({ length: n }, () => new Array(n).fill(1))
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let d = 0
+      const a = feats[i]!
+      const b = feats[j]!
+      for (let k = 0; k < a.length; k++) d += (a[k]! - b[k]!) ** 2
+      const s = Math.exp(-d / scale)
+      S[i]![j] = s
+      S[j]![i] = s
+    }
+  }
+  return S
 }
 
 /**
- * Auto-detect move boundaries inside [start, end]. When the song's tempo is known, cuts
- * are aligned to the beat grid (~`targetSec` per move) and snapped to the quietest nearby
- * beat — musical and accurate. Without a tempo it falls back to motion-dip detection, and
- * without pose data (e.g. playback-only) to an even split.
+ * Foote novelty at each sample, expressed as a before/after contrast in [-1, 1]: how much
+ * more the two half-windows resemble themselves than each other. `L` is the kernel half-width
+ * in samples (≈ half a target segment). Repetition → ~0; a clean phrase change → strongly
+ * positive.
+ */
+function noveltyContrast(S: number[][], L: number): number[] {
+  const n = S.length
+  const sigma = Math.max(L / 2, 1)
+  // Precompute the tapered checkerboard weights and their total positive mass (normalizer).
+  const g: number[][] = []
+  let W = 0
+  for (let k = -L; k <= L; k++) {
+    const row: number[] = []
+    for (let l = -L; l <= L; l++) {
+      const w = Math.exp(-(k * k + l * l) / (2 * sigma * sigma))
+      row.push(w)
+      if ((k < 0) === (l < 0)) W += w
+    }
+    g.push(row)
+  }
+  const out = new Array(n).fill(0)
+  for (let i = 0; i < n; i++) {
+    let s = 0
+    for (let k = -L; k <= L; k++) {
+      const a = i + k
+      if (a < 0 || a >= n) continue
+      const grow = g[k + L]!
+      const Sa = S[a]!
+      for (let l = -L; l <= L; l++) {
+        const b = i + l
+        if (b < 0 || b >= n) continue
+        const sign = (k < 0) === (l < 0) ? 1 : -1
+        s += sign * grow[l + L]! * Sa[b]!
+      }
+    }
+    out[i] = W > 0 ? s / W : 0
+  }
+  return out
+}
+
+/**
+ * Distinct-move boundaries from pose novelty. Cuts fall on real phrase changes; repeated
+ * motion is left whole. Beat-snapped when a tempo is known. Returns [] when the pose stays
+ * one continuous phrase (nothing to cut) — the caller trusts that over any time-based split.
+ */
+function noveltyBounds(
+  sp: PoseSamples,
+  start: number,
+  end: number,
+  targetSec: number,
+  tempo?: Tempo,
+): number[] {
+  const { times, feats } = sp
+  const n = feats.length
+  const span = end - start
+  const sps = n / span // samples per second
+  const L = Math.max(3, Math.min(Math.floor((n - 1) / 2), Math.round(targetSec * 0.5 * sps)))
+  if (n < 2 * L + 1) return [] // window too short to host even one segment either side
+
+  const S = similarityMatrix(feats)
+  const contrast = noveltyContrast(S, L)
+
+  const minGapSec = Math.max(1.2, targetSec * 0.5)
+  const minGapSamples = Math.max(1, Math.round(minGapSec * sps))
+  const maxCuts = Math.max(1, Math.round(span / (targetSec * 0.6)))
+
+  // Local maxima of the contrast curve that clear the floor = candidate phrase changes.
+  const peaks: { i: number; v: number }[] = []
+  for (let i = 1; i < n - 1; i++) {
+    const v = contrast[i]!
+    if (v > CONTRAST_FLOOR && v >= contrast[i - 1]! && v > contrast[i + 1]!) {
+      peaks.push({ i, v })
+    }
+  }
+  peaks.sort((a, b) => b.v - a.v)
+
+  // Greedily keep the strongest, spaced out, away from the ends.
+  const edge = Math.max(minGapSamples, L)
+  const chosen: number[] = []
+  for (const p of peaks) {
+    if (chosen.length >= maxCuts) break
+    if (p.i < edge || p.i > n - 1 - edge) continue
+    if (chosen.some((c) => Math.abs(c - p.i) < minGapSamples)) continue
+    chosen.push(p.i)
+  }
+  chosen.sort((a, b) => a - b)
+
+  const beats = tempo && tempo.bpm > 0 && tempo.beatIntervalSec > 0 ? beatTimes(tempo, start, end) : []
+  const out: number[] = []
+  let last = start
+  for (const idx of chosen) {
+    let t = times[idx]!
+    if (beats.length) t = snapToBeat(t, beats, tempo!.beatIntervalSec * 1.5)
+    if (t >= last + minGapSec && t < end - minGapSec) {
+      out.push(t)
+      last = t
+    }
+  }
+  return out
+}
+
+/** Nearest beat to `t` within `tol` seconds, else `t` unchanged. */
+function snapToBeat(t: number, beats: number[], tol: number): number {
+  let best = t
+  let bd = tol
+  for (const b of beats) {
+    const d = Math.abs(b - t)
+    if (d < bd) { bd = d; best = b }
+  }
+  return best
+}
+
+/**
+ * Auto-detect move boundaries inside [start, end]. When the dancing is tracked, cuts land on
+ * distinct-movement changes (pose novelty) and a repeated phrase is kept whole — so each
+ * segment is a short phrase of a few moves. Cuts snap to the beat when a tempo is known.
+ * Without pose data (playback-only tracks) it falls back to a beat-aligned split, or an even
+ * split when there's no tempo either.
  */
 export function autoMoveBounds(
   frames: ReferenceFrame[],
@@ -235,9 +403,14 @@ export function autoMoveBounds(
 ): number[] {
   const span = end - start
   if (span <= 0.05 || targetSec <= 0) return []
+
+  // Pose available → trust distinct-movement detection, including "no cuts" for a pure repeat.
+  const poses = samplePoses(frames, start, end)
+  if (poses) return noveltyBounds(poses, start, end, targetSec, tempo)
+
+  // No usable pose (e.g. playback-only). Space it out: beat grid if we have a tempo, else even.
   const n = Math.max(1, Math.round(span / targetSec))
   if (n <= 1) return []
-
   if (tempo && tempo.bpm > 0 && tempo.beatIntervalSec > 0) {
     const beats = beatTimes(tempo, start, end)
     if (beats.length >= 4) {
@@ -245,5 +418,5 @@ export function autoMoveBounds(
       if (aligned.length) return aligned
     }
   }
-  return motionMoveBounds(frames, start, end, n)
+  return evenMoveBounds(start, end, targetSec)
 }
