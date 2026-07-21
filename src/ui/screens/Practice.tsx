@@ -16,6 +16,8 @@ import {
   autoMoveBounds,
 } from '../../core/reference/segment'
 import { detectTalkingRanges, overlapFraction } from '../../core/reference/talking'
+import { captureDancerThumbs } from '../components/dancerThumbs'
+import { loopWrapAction } from '../../core/practice/loopWrap'
 import { VoiceController, type VoiceCommand } from '../../engine/voice'
 import { BeatMusic } from '../../engine/beatMusic'
 import { drawSkeleton, drawHumanFigure, worldProjector, containProjector, coverProjector } from '../components/drawSkeleton'
@@ -147,12 +149,14 @@ export function Practice() {
   const [noBody, setNoBody] = useState(false)
   // segMode drives what the stage is doing:
   //  - 'watch'   plain practice (loop, Got it) — no camera, no tracking, no recording
+  //  - 'runthrough' the final practice pass: the whole routine once, still no camera
+  //  - 'rundone' after that pass — did you get it, or drill some more?
   //  - 'menu'    the rater's pick-what-to-rate screen
   //  - 'test'    the rater: dance a range once, being scored + recorded (reference audio only)
   //  - 'results' single-segment score + tips
   //  - 'summary' full run-through recap (per-segment grades)
   //  - 'replay'  side-by-side: instructor + your recorded take (watch yourself back)
-  const [segMode, setSegMode] = useState<'watch' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
+  const [segMode, setSegMode] = useState<'watch' | 'runthrough' | 'rundone' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
   /** Per-slot scores from the last take (one entry per tracked dancer, display order). */
   const [testResults, setTestResults] = useState<(DetailedSectionScore | null)[]>([])
   /** Per-slot coaching lines about being ahead of / behind the music (null = on time). */
@@ -163,6 +167,8 @@ export function Practice() {
   const [multiRun, setMultiRun] = useState<{ dancers: number[]; summaries: RunSummary[] } | null>(null)
   /** Which reference dancers the group is testing against (dancer indices, unordered). */
   const [testDancers, setTestDancers] = useState<number[]>([track.activeDancer ?? 0])
+  /** Snapshot of each dancer cropped from the video, so the picker shows WHO is who. */
+  const [dancerThumbs, setDancerThumbs] = useState<(string | null)[]>([])
   /** Object URL of the camera recording captured during the last take. */
   const [takeUrl, setTakeUrl] = useState<string | null>(null)
   // The camera owns the whole stage while the rater scores you.
@@ -236,7 +242,7 @@ export function Practice() {
   const completedRef = useRef<number[]>([])
   const countdownTimerRef = useRef<number | null>(null)
   const voiceHandlerRef = useRef<(c: VoiceCommand) => void>(() => {})
-  const segModeRef = useRef<'watch' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
+  const segModeRef = useRef<'watch' | 'runthrough' | 'rundone' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
   /** True while the rater is recording a single scored pass (the segment playing once through). */
   const testActiveRef = useRef(false)
   /** Full run-through state: the queue of segment indices to score, and per-segment
@@ -449,31 +455,37 @@ export function Practice() {
       if (seekTarget !== null) {
         if (Math.abs(t - seekTarget) < 0.35 || now - lastSeekMsRef.current > 1500) awaitingSeekRef.current = null
       } else if (prev > t + 0.08 && phaseRef.current === 'go' && !fullRunRef.current) {
+        // The playhead jumped back to the start of the region: that pass just finished.
+        // What that MEANS is decided by loopWrapAction (pure + unit-tested).
         pb.pause()
-        if (testActiveRef.current) {
-          // A single recorded pass plays the segment exactly once — the wrap is the finish
-          // line. Grade it (and keep the take for the watch-yourself-back replay).
+        const action = loopWrapAction({
+          takeActive: testActiveRef.current,
+          segMode: segModeRef.current,
+          repsSoFar: repCounterRef.current,
+          repLimit: repsRef.current,
+        })
+        if (action === 'finishTake') {
           testActiveRef.current = false
           finishTestRef.current()
-        } else if (segModeRef.current === 'replay') {
+        } else if (action === 'hold') {
           // Side-by-side replay ran the segment once; hold at the end for ▶ Replay.
           // (The take video simply ends on its own.)
+        } else if (action === 'finishRun') {
+          setPlaying(false)
+          setSegMode('rundone'); segModeRef.current = 'rundone'
+        } else if (action === 'repsDone') {
+          repCounterRef.current = 0
+          flashToast('Done · ✓ Got it for the next one, or ↻ repeat')
         } else {
           repCounterRef.current += 1
-          const reachedLimit = repsRef.current !== Infinity && repCounterRef.current >= repsRef.current
-          if (reachedLimit) {
-            repCounterRef.current = 0
-            flashToast('Done · ✓ Got it for the next one, or ↻ repeat')
-          } else {
-            // Wait the break, then resume from the loop start (already there — no re-seek,
-            // which could otherwise interrupt play() and leave it stuck paused).
-            runCountdown(() => {
-              const p = playbackRef.current
-              if (!p) return
-              prevTimeRef.current = loopStartRef.current
-              p.play()
-            })
-          }
+          // Wait the break, then resume from the loop start (already there — no re-seek,
+          // which could otherwise interrupt play() and leave it stuck paused).
+          runCountdown(() => {
+            const p = playbackRef.current
+            if (!p) return
+            prevTimeRef.current = loopStartRef.current
+            p.play()
+          })
         }
       }
     })
@@ -636,6 +648,18 @@ export function Practice() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Snapshot each dancer once the picker is up, so "Dancer 1 / Dancer 2" have faces.
+  // Decoding happens off to the side; the on-screen video never moves.
+  useEffect(() => {
+    const ds = track.dancers
+    if (segMode !== 'menu' || !videoUrl || !ds || ds.length <= 1 || dancerThumbs.length === ds.length) return
+    let cancelled = false
+    void captureDancerThumbs(videoUrl, ds, trimStart, trimEnd).then((thumbs) => {
+      if (!cancelled) setDancerThumbs(thumbs)
+    })
+    return () => { cancelled = true }
+  }, [segMode, videoUrl, track, trimStart, trimEnd, dancerThumbs.length])
 
   // Tidy up the take recording on unmount (stop the recorder, free the blob URL).
   useEffect(() => () => {
@@ -1116,9 +1140,39 @@ export function Practice() {
     pb.play(); setPlaying(true)
   }
 
+  // ===== The final practice pass: the whole routine once, still camera-free =====
+
+  /** Dance the whole routine start to finish, once, then say whether you got it. */
+  function startPracticeRun() {
+    const pb = playbackRef.current
+    if (!pb) return
+    clearCountdown()
+    if (segModeRef.current !== 'watch') exitTestFlow()
+    setFullRun(false); fullRunRef.current = false // wrap detection ends the pass
+    setMoveIdx(0); moveIdxRef.current = 0
+    setSegMode('runthrough'); segModeRef.current = 'runthrough'
+    setLoopRegion(trimStartRef.current, trimEndRef.current)
+    runCountdown(() => {
+      const p = playbackRef.current
+      if (!p) return
+      prevTimeRef.current = trimStartRef.current
+      p.play(); setPlaying(true)
+    }, 'Full run-through in', 3)
+  }
+
+  /** Got it → straight into Test my skills. Not yet → back to drilling. */
+  function finishPracticeRun(gotIt: boolean) {
+    clearCountdown()
+    playbackRef.current?.pause(); setPlaying(false)
+    setSegMode('watch'); segModeRef.current = 'watch'
+    if (gotIt) { enterRating(); return }
+    flashToast('No worries · drill any segment, then run it again')
+    gotoMove(0)
+  }
+
   function togglePlay() {
-    // Don't let Space/Play interrupt a test take or desync the side-by-side replay.
-    if (segModeRef.current === 'test' || segModeRef.current === 'replay') return
+    // Don't let Space/Play interrupt a test take, the final pass, or the replay.
+    if (segModeRef.current === 'test' || segModeRef.current === 'replay' || segModeRef.current === 'runthrough') return
     const pb = playbackRef.current
     if (!pb) return
     clearCountdown()
@@ -1290,9 +1344,11 @@ export function Practice() {
               ? '🎯 Test my skills'
               : phase === 'bounds'
                 ? (creating ? 'Create your segments' : 'Edit segments')
-                : fullRun
-                  ? 'Full song'
-                  : `Segment ${moveIdx + 1} of ${moves.length}`}
+                : segMode === 'runthrough' || segMode === 'rundone'
+                  ? 'Full run-through'
+                  : fullRun
+                    ? 'Full song'
+                    : `Segment ${moveIdx + 1} of ${moves.length}`}
           </p>
         </div>
         <button onClick={rating ? exitRating : back} className={btn + ' !py-2'}>Exit</button>
@@ -1303,7 +1359,11 @@ export function Practice() {
         {/* Which segment you're on — top-left badge (the test overlay has its own). */}
         {inGo && !camMain && (
           <span className="absolute left-3 top-3 z-20 rounded-2xl bg-brand px-3 py-2 font-display text-sm font-bold text-cream shadow-glow">
-            {fullRun ? 'Full song' : `Segment ${moveIdx + 1} of ${moves.length}`}
+            {segMode === 'runthrough' || segMode === 'rundone'
+              ? 'Full run-through'
+              : fullRun
+                ? 'Full song'
+                : `Segment ${moveIdx + 1} of ${moves.length}`}
           </span>
         )}
         {/* Editor preview: which segment is playing. */}
@@ -1464,10 +1524,13 @@ export function Practice() {
                   <p className="text-xs font-medium uppercase tracking-wider text-ink/45">
                     {track.dancers.length} dancers found · tap everyone who's dancing
                   </p>
+                  {/* Each card shows that dancer cropped from the video, so you pick a
+                      PERSON you recognize rather than guessing what "Dancer 2" means. */}
                   <div className="mt-2 flex flex-wrap gap-2">
                     {track.dancers.map((_, i) => {
                       const color = DANCER_COLORS[i % DANCER_COLORS.length]!
                       const active = testDancers.includes(i)
+                      const thumb = dancerThumbs[i]
                       return (
                         <button
                           key={i}
@@ -1483,11 +1546,21 @@ export function Practice() {
                             const pb = playbackRef.current
                             if (pb) pb.seek(pb.getTime())
                           }}
-                          className={`flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-semibold transition active:scale-95 ${active ? 'border-transparent text-[#0b0b16]' : 'border-line text-ink/70 hover:text-ink'}`}
-                          style={active ? { background: color } : undefined}
+                          className={`relative overflow-hidden rounded-xl border-2 transition active:scale-95 ${active ? 'shadow-glow' : 'border-line opacity-70 hover:opacity-100'}`}
+                          style={{ borderColor: active ? color : undefined, width: 78 }}
+                          title={`Dancer ${i + 1}`}
                         >
-                          <span className="h-2.5 w-2.5 rounded-full" style={{ background: active ? '#0b0b16' : color }} />
-                          Dancer {i + 1}
+                          {thumb ? (
+                            <img src={thumb} alt={`Dancer ${i + 1}`} className="h-24 w-full object-cover" />
+                          ) : (
+                            <div className="flex h-24 w-full items-center justify-center bg-ink/10 text-2xl">💃</div>
+                          )}
+                          <span
+                            className="block py-1 text-center text-xs font-bold"
+                            style={{ background: active ? color : 'transparent', color: active ? '#0b0b16' : undefined }}
+                          >
+                            {active ? '✓ ' : ''}Dancer {i + 1}
+                          </span>
                         </button>
                       )
                     })}
@@ -1738,6 +1811,25 @@ export function Practice() {
             </div>
           </div>
         )}
+        {/* END OF THE FINAL PRACTICE PASS — did it click, or drill some more? */}
+        {inGo && segMode === 'rundone' && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-sm rounded-2.5xl border border-line bg-panel/95 p-5 text-center shadow-soft">
+              <p className="font-display text-lg font-bold">That's the whole thing 🎉</p>
+              <p className="mt-1 text-sm text-ink/60">Did you get it, or do you want to drill a bit more?</p>
+              <div className="mt-4 flex flex-col gap-2">
+                <button
+                  onClick={() => finishPracticeRun(true)}
+                  className="w-full rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
+                >
+                  ✓ Got it{!playbackOnly && ' · test my skills →'}
+                </button>
+                <button onClick={startPracticeRun} className={btn}>↻ Run it again</button>
+                <button onClick={() => finishPracticeRun(false)} className={btn}>Not yet · keep drilling</button>
+              </div>
+            </div>
+          </div>
+        )}
         {countdown > 0 && (
           <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/45 backdrop-blur-[1px]">
             <p className="text-xs uppercase tracking-[0.2em] text-cream/70">{countdownLabel}</p>
@@ -1866,16 +1958,23 @@ export function Practice() {
             <button onClick={() => gotoMove(nextOpen(moveIdx, 1))} className={btn + ' !px-3'}>skip ›</button>
           </div>
 
-          {/* Finished everything → nudge toward the rater */}
-          {!playbackOnly && moves.length > 0 && completed.length >= moves.length - skip.length && (
+          {/* Finished every segment → put it together in one full pass before the camera
+              ever comes on. Test my skills stays reachable for anyone who'd rather skip. */}
+          {moves.length > 0 && completed.length >= moves.length - skip.length && (
             <div className="flex flex-col items-center gap-2 rounded-2xl border border-brand2/40 bg-brand2/[0.08] px-4 py-3 text-center">
-              <p className="text-sm font-semibold text-ink">Great job — you got the whole thing! 🎉</p>
+              <p className="text-sm font-semibold text-ink">You got every segment 🎉</p>
+              <p className="text-xs text-ink/55">Now put it together: dance the whole thing start to finish.</p>
               <button
-                onClick={enterRating}
+                onClick={startPracticeRun}
                 className="rounded-xl bg-brand2 px-5 py-2.5 text-sm font-bold text-[#06222a] shadow-soft transition hover:brightness-105 active:scale-95"
               >
-                🎯 Test your skills on camera →
+                ▶ Full run-through
               </button>
+              {!playbackOnly && (
+                <button onClick={enterRating} className="text-xs text-ink/45 underline-offset-2 transition hover:text-ink hover:underline">
+                  or skip to 🎯 Test my skills
+                </button>
+              )}
             </div>
           )}
 
@@ -1886,6 +1985,41 @@ export function Practice() {
             ) : (
               <span className="text-ink/40">Drill this segment, then ✓ Got it for the next one.</span>
             )}
+          </div>
+        </>
+      ) : segMode === 'runthrough' ? (
+        <>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <button onClick={() => setMirror((m) => !m)} className={mirror ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}>🪞 Mirror</button>
+            <button onClick={() => { clearCountdown(); playbackRef.current?.pause(); setPlaying(false); setSegMode('watch'); segModeRef.current = 'watch'; gotoMove(moveIdxRef.current) }} className={btn}>
+              ✕ Stop
+            </button>
+          </div>
+          <div className="flex min-h-[24px] items-center justify-center text-sm">
+            <span className="text-ink/40">Dance the whole thing · no camera, just you and the music.</span>
+          </div>
+        </>
+      ) : segMode === 'rundone' ? (
+        <>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <button onClick={startPracticeRun} className={btn}>↻ Run it again</button>
+            <button
+              onClick={() => finishPracticeRun(false)}
+              className="rounded-xl border border-line bg-ink/[0.06] px-5 py-2.5 text-sm font-semibold text-ink/80 transition hover:text-ink active:scale-95"
+            >
+              Not yet · keep drilling
+            </button>
+            <button
+              onClick={() => finishPracticeRun(true)}
+              className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
+            >
+              ✓ Got it{!playbackOnly && ' · test me →'}
+            </button>
+          </div>
+          <div className="flex min-h-[24px] items-center justify-center text-sm">
+            <span className="text-ink/40">
+              {playbackOnly ? 'How did that go?' : 'Got it? Next stop is the camera.'}
+            </span>
           </div>
         </>
       ) : segMode === 'replay' ? (
