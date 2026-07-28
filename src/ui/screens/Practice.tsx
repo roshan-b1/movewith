@@ -162,7 +162,7 @@ export function Practice() {
   //  - 'results' single-segment score + tips
   //  - 'summary' full run-through recap (per-segment grades)
   //  - 'replay'  side-by-side: instructor + your recorded take (watch yourself back)
-  const [segMode, setSegMode] = useState<'watch' | 'runthrough' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
+  const [segMode, setSegMode] = useState<'watch' | 'runthrough' | 'recordrun' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
   /** Per-slot scores from the last take (one entry per tracked dancer, display order). */
   const [testResults, setTestResults] = useState<(DetailedSectionScore | null)[]>([])
   /** Per-slot coaching lines about being ahead of / behind the music (null = on time). */
@@ -177,6 +177,13 @@ export function Practice() {
   const [dancerThumbs, setDancerThumbs] = useState<(string | null)[]>([])
   /** Object URL of the camera recording captured during the last take. */
   const [takeUrl, setTakeUrl] = useState<string | null>(null)
+  // "Record my run": an OPT-IN camera pass over the whole routine in plain practice (no
+  // scoring), so you can watch yourself back. Stays on through its watch-back replay so
+  // "Record again" is instant; false the rest of the time (practice is camera-free).
+  const [recordRun, setRecordRun] = useState(false)
+  // Where ✓/‹ Back go when leaving side-by-side replay: the single-segment feedback, the
+  // full-run summary, or back to plain practice (a record-my-run watch-back).
+  const [replayReturn, setReplayReturn] = useState<'results' | 'summary' | 'practice'>('results')
   // The camera owns the whole stage while the rater scores you.
   const camMain = scoring && (segMode === 'test' || segMode === 'results')
   // Side-by-side replay: instructor on the left, your recorded take on the right.
@@ -259,13 +266,21 @@ export function Practice() {
   const completedRef = useRef<number[]>([])
   const countdownTimerRef = useRef<number | null>(null)
   const voiceHandlerRef = useRef<(c: VoiceCommand) => void>(() => {})
-  const segModeRef = useRef<'watch' | 'runthrough' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
+  const segModeRef = useRef<'watch' | 'runthrough' | 'recordrun' | 'menu' | 'test' | 'results' | 'summary' | 'replay'>('watch')
   /** True while the rater is recording a single scored pass (the segment playing once through). */
   const testActiveRef = useRef(false)
   /** True while the current take is the full-dance pass (sliced per segment afterwards). */
   const wholeRunRef = useRef(false)
+  /** True across a record-my-run session (the recording pass + its watch-back). */
+  const recordRunRef = useRef(false)
+  /** Guards the one-shot "camera is warm, start the record pass" trigger. */
+  const recordStartedRef = useRef(false)
+  /** Playback rate the current take was danced at, so replay matches it and stays in sync. */
+  const takeRateRef = useRef(1)
   const finishTestRef = useRef<() => void>(() => {})
+  const finishRecordRunRef = useRef<() => void>(() => {})
   const cancelTestRef = useRef<() => void>(() => {})
+  const cancelRecordRunRef = useRef<() => void>(() => {})
   const recorderRef = useRef<MediaRecorder | null>(null)
   /** Slot data mirrored into refs so the 30fps engine callback reads fresh selection. */
   const slotFramesRef = useRef(slotInfo.frames)
@@ -474,6 +489,7 @@ export function Practice() {
         pb.pause()
         const action = loopWrapAction({
           takeActive: testActiveRef.current,
+          recordRun: recordRunRef.current && segModeRef.current === 'recordrun',
           segMode: segModeRef.current,
           repsSoFar: repCounterRef.current,
           repLimit: repsRef.current,
@@ -481,6 +497,8 @@ export function Practice() {
         if (action === 'finishTake') {
           testActiveRef.current = false
           finishTestRef.current()
+        } else if (action === 'finishRecordRun') {
+          finishRecordRunRef.current()
         } else if (action === 'hold') {
           // Side-by-side replay ran the segment once; hold at the end for ▶ Replay.
           // (The take video simply ends on its own.)
@@ -525,10 +543,12 @@ export function Practice() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Camera + pose engine. Runs ONLY in the rater ("Test my skills"), and only once you're
-  // actually there (phase 'go') — never during setup, segment cutting, or plain practice.
+  // Camera + pose engine. Runs in the rater ("Test my skills") and during an opt-in
+  // "record my run" pass, and only once you're actually practicing (phase 'go') — never
+  // during setup, segment cutting, or plain (camera-free) practice. The pose engine only
+  // starts when scoring; a record-run just needs the raw stream to record.
   useEffect(() => {
-    if (!rating || playbackOnly || phase !== 'go') return
+    if ((!rating && !recordRun) || playbackOnly || phase !== 'go') return
     let cam: CameraHandle | null = null
     let disposed = false
     const getReference = (): ReferenceContext => {
@@ -613,7 +633,7 @@ export function Practice() {
       ;(camRef.current ?? cam)?.stop(); camRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [track.id, rating, playbackOnly, phase])
+  }, [track.id, rating, recordRun, playbackOnly, phase])
 
   useEffect(() => {
     const cs = [instructorCanvasRef.current, instructorOverlayRef.current, webcamCanvasRef.current].filter(
@@ -684,9 +704,10 @@ export function Practice() {
   useEffect(() => {
     const onVis = () => {
       if (!document.hidden) return
-      // A hidden tab freezes the clock mid-take — abandon the test cleanly instead of
-      // leaving it stuck; the dancer can just hit Got it again when they're back.
+      // A hidden tab freezes the clock mid-take — abandon the test/record cleanly instead
+      // of leaving it stuck; the dancer can just start again when they're back.
       if (testActiveRef.current) cancelTestRef.current()
+      else if (recordRunRef.current && segModeRef.current === 'recordrun') cancelRecordRunRef.current()
       playbackRef.current?.pause()
       if (countdownTimerRef.current) { window.clearTimeout(countdownTimerRef.current); countdownTimerRef.current = null }
       setCountdown(0)
@@ -791,6 +812,7 @@ export function Practice() {
       if (!p) return
       prevTimeRef.current = s
       testActiveRef.current = true
+      takeRateRef.current = rateRef.current // replay the reference at the speed you danced
       engineRef.current?.startRecording()
       startTakeRecording()
       p.play(); setPlaying(true)
@@ -900,14 +922,18 @@ export function Practice() {
 
   function startReplay() {
     if (!takeUrlRef.current) return
+    // Remember where ✓/‹ Back should return to (single-segment feedback vs the run summary).
+    setReplayReturn(segModeRef.current === 'summary' ? 'summary' : 'results')
     playbackRef.current?.pause()
     setSegMode('replay'); segModeRef.current = 'replay'
     window.setTimeout(replayBoth, 80) // let the take <video> mount before playing
   }
-  /** (Re)start both sides in sync from the top of the segment. */
+  /** (Re)start both sides in sync from the top. The take video plays at its native 1x;
+   *  the reference matches the speed the take was danced at, so they stay locked. */
   function replayBoth() {
     const pb = playbackRef.current
     if (!pb) return
+    pb.setRate(takeRateRef.current)
     pb.seek(loopStartRef.current)
     prevTimeRef.current = loopStartRef.current
     awaitingSeekRef.current = loopStartRef.current
@@ -916,10 +942,13 @@ export function Practice() {
     if (tv) { tv.currentTime = 0; void tv.play().catch(() => {}) }
     pb.play(); setPlaying(true)
   }
+  /** Leave replay back to the feedback it came from, restoring the practice speed. */
   function backToResults() {
     playbackRef.current?.pause(); setPlaying(false)
+    playbackRef.current?.setRate(rateRef.current)
     takeVideoRef.current?.pause()
-    setSegMode('results'); segModeRef.current = 'results'
+    const dest = replayReturn === 'summary' ? 'summary' : 'results'
+    setSegMode(dest); segModeRef.current = dest
   }
 
   function clearCountdown() {
@@ -1204,9 +1233,84 @@ export function Practice() {
     gotoMove(0)
   }
 
+  // ===== Record my run: an opt-in single camera pass over the whole routine, no scoring,
+  // just so you can watch yourself back side by side. =====
+
+  /** Arm a recorded pass: turn the camera on and wait for it to warm. The pass itself is
+   *  kicked off by the effect below once the stream is ready (so we never record blind). */
+  function startRecordRun() {
+    const pb = playbackRef.current
+    if (!pb) return
+    clearCountdown()
+    if (segModeRef.current !== 'watch') exitTestFlow()
+    pb.pause(); setPlaying(false)
+    dropTakeRecording()
+    setFullRun(false); fullRunRef.current = false
+    setMoveIdx(0); moveIdxRef.current = 0
+    recordStartedRef.current = false
+    setRecordRun(true); recordRunRef.current = true
+    setSegMode('recordrun'); segModeRef.current = 'recordrun'
+    setLoopRegion(trimStartRef.current, trimEndRef.current)
+  }
+
+  /** The recorded pass finished its single loop: stop recording and watch it back. */
+  function finishRecordRun() {
+    playbackRef.current?.pause(); setPlaying(false)
+    recordStartedRef.current = false
+    stopTakeRecording(true) // onstop builds the take URL; the effect below auto-plays replay
+    setReplayReturn('practice')
+    setSegMode('replay'); segModeRef.current = 'replay'
+  }
+  finishRecordRunRef.current = finishRecordRun
+
+  /** Bail out of a record pass without watching back (Cancel, or the tab going hidden). */
+  function cancelRecordRun() {
+    clearCountdown()
+    recordStartedRef.current = false
+    dropTakeRecording()
+    setRecordRun(false); recordRunRef.current = false
+    playbackRef.current?.pause(); setPlaying(false)
+    setSegMode('watch'); segModeRef.current = 'watch'
+    gotoMove(moveIdxRef.current)
+  }
+  cancelRecordRunRef.current = cancelRecordRun
+
+  /** Done watching a record-my-run back: turn the camera off, return to plain practice. */
+  function doneRecordReplay() {
+    takeVideoRef.current?.pause()
+    playbackRef.current?.setRate(rateRef.current)
+    setRecordRun(false); recordRunRef.current = false
+    setSegMode('watch'); segModeRef.current = 'watch'
+    gotoMove(moveIdxRef.current)
+  }
+
+  // Once the camera is warm, actually start the recorded pass (3-2-1, then play + record).
+  useEffect(() => {
+    if (segMode !== 'recordrun' || camStatus !== 'ready' || recordStartedRef.current) return
+    recordStartedRef.current = true
+    runCountdown(() => {
+      const p = playbackRef.current
+      if (!p) return
+      prevTimeRef.current = trimStartRef.current
+      takeRateRef.current = rateRef.current
+      startTakeRecording()
+      p.play(); setPlaying(true)
+    }, 'Recording in', 3)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segMode, camStatus])
+
+  // A record-my-run take is ready → auto-play the side-by-side watch-back.
+  useEffect(() => {
+    if (segMode === 'replay' && replayReturn === 'practice' && takeUrl) {
+      const id = window.setTimeout(replayBoth, 90)
+      return () => window.clearTimeout(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [takeUrl, segMode, replayReturn])
+
   function togglePlay() {
-    // Don't let Space/Play interrupt a test take, the final pass, or the replay.
-    if (segModeRef.current === 'test' || segModeRef.current === 'replay' || segModeRef.current === 'runthrough') return
+    // Don't let Space/Play interrupt a test take, a recorded pass, the final pass, or replay.
+    if (['test', 'recordrun', 'replay', 'runthrough'].includes(segModeRef.current)) return
     const pb = playbackRef.current
     if (!pb) return
     clearCountdown()
@@ -1378,11 +1482,15 @@ export function Practice() {
               ? '🎯 Test my skills'
               : phase === 'bounds'
                 ? (creating ? 'Create your segments' : 'Edit segments')
-                : segMode === 'runthrough'
-                  ? 'Full run-through'
-                  : fullRun
-                    ? 'Full song'
-                    : `Segment ${moveIdx + 1} of ${moves.length}`}
+                : segMode === 'recordrun'
+                  ? '🎥 Recording your run'
+                  : segMode === 'replay' && replayReturn === 'practice'
+                    ? 'Watch yourself back'
+                    : segMode === 'runthrough'
+                      ? 'Full run-through'
+                      : fullRun
+                        ? 'Full song'
+                        : `Segment ${moveIdx + 1} of ${moves.length}`}
           </p>
         </div>
         <button onClick={rating ? exitRating : back} className={btn + ' !py-2'}>Exit</button>
@@ -1393,13 +1501,17 @@ export function Practice() {
         {/* Which segment you're on — top-left badge (the test overlay has its own). */}
         {inGo && !camMain && (
           <span className="absolute left-3 top-3 z-20 rounded-2xl bg-brand px-3 py-2 font-display text-sm font-bold text-cream shadow-glow">
-            {segMode === 'runthrough'
-              ? 'Full run-through'
-              : fullRun
-                ? 'Full song'
-                : comboIndices.length > 1
-                  ? `Segments ${comboIndices.map((i) => i + 1).join(' + ')}`
-                  : `Segment ${moveIdx + 1} of ${moves.length}`}
+            {segMode === 'recordrun'
+              ? '🎥 Recording'
+              : segMode === 'replay' && replayReturn === 'practice'
+                ? 'Watch yourself back'
+                : segMode === 'runthrough'
+                  ? 'Full run-through'
+                  : fullRun
+                    ? 'Full song'
+                    : comboIndices.length > 1
+                      ? `Segments ${comboIndices.map((i) => i + 1).join(' + ')}`
+                      : `Segment ${moveIdx + 1} of ${moves.length}`}
           </span>
         )}
         {/* Editor preview: which segment is playing. */}
@@ -1490,14 +1602,14 @@ export function Practice() {
             instructor) during self-view and self-view takes; a small corner tile on the rater
             menu. Hidden during side-by-side replay (your recorded take is on screen there).
             Stays mounted so the stream stays warm. */}
-        {inGo && rating && (
+        {inGo && (rating || recordRun) && (
           <div
             className={
               camMain
                 ? 'absolute inset-0 z-10 bg-black'
                 : replaying
                   ? 'hidden'
-                  : segMode === 'menu'
+                  : segMode === 'menu' || segMode === 'recordrun'
                     ? 'absolute bottom-3 right-3 z-10 h-36 w-28 overflow-hidden rounded-2xl border border-line bg-black shadow-soft sm:h-44 sm:w-36'
                     : 'hidden'
             }
@@ -1506,9 +1618,14 @@ export function Practice() {
               <video ref={webcamVideoRef} className="h-full w-full object-cover" playsInline muted />
               <canvas ref={webcamCanvasRef} className="absolute inset-0 h-full w-full" />
             </div>
-            {!camMain && camStatus === 'ready' && (
+            {!camMain && camStatus === 'ready' && segMode !== 'recordrun' && (
               <span className="absolute bottom-1 left-1 z-20 rounded-lg bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-cream/85 backdrop-blur">
                 You
+              </span>
+            )}
+            {segMode === 'recordrun' && camStatus === 'ready' && (
+              <span className="absolute bottom-1 left-1 z-20 flex items-center gap-1 rounded-lg bg-black/60 px-1.5 py-0.5 text-[10px] font-bold text-cream backdrop-blur">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-bad" /> REC
               </span>
             )}
             {camStatus !== 'ready' && (
@@ -1792,6 +1909,11 @@ export function Practice() {
                 })}
               </div>
               <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                {takeUrl && (
+                  <button onClick={startReplay} className={btn + ' !border-brand2/50'} title="Watch your run next to the instructor">
+                    🎬 Watch side by side
+                  </button>
+                )}
                 <button onClick={startWholeDanceRun} className={btn}>↻ Dance it again</button>
                 <button onClick={() => setSegMode('menu')} className={btn}>🎯 One segment</button>
                 <button
@@ -1850,6 +1972,11 @@ export function Practice() {
                 ))}
               </div>
               <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                {takeUrl && (
+                  <button onClick={startReplay} className={btn + ' !border-brand2/50'} title="Watch your run next to the instructor">
+                    🎬 Watch side by side
+                  </button>
+                )}
                 <button onClick={startWholeDanceRun} className={btn}>↻ Dance it again</button>
                 <button onClick={() => setSegMode('menu')} className={btn}>🎯 One segment</button>
                 <button
@@ -2014,12 +2141,23 @@ export function Practice() {
             <div className="flex flex-col items-center gap-2 rounded-2xl border border-brand2/40 bg-brand2/[0.08] px-4 py-3 text-center">
               <p className="text-sm font-semibold text-ink">You got every segment 🎉</p>
               <p className="text-xs text-ink/55">Now put it together: dance the whole thing start to finish.</p>
-              <button
-                onClick={startPracticeRun}
-                className="rounded-xl bg-brand2 px-5 py-2.5 text-sm font-bold text-[#06222a] shadow-soft transition hover:brightness-105 active:scale-95"
-              >
-                ▶ Full run-through
-              </button>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  onClick={startPracticeRun}
+                  className="rounded-xl bg-brand2 px-5 py-2.5 text-sm font-bold text-[#06222a] shadow-soft transition hover:brightness-105 active:scale-95"
+                >
+                  ▶ Full run-through
+                </button>
+                {!playbackOnly && (
+                  <button
+                    onClick={startRecordRun}
+                    title="Dance it once with the camera on, then watch yourself back"
+                    className="rounded-xl border border-brand2/50 bg-brand2/15 px-5 py-2.5 text-sm font-bold text-ink transition hover:bg-brand2/25 active:scale-95"
+                  >
+                    🎥 Record my run
+                  </button>
+                )}
+              </div>
               {!playbackOnly && (
                 <button onClick={enterRating} className="text-xs text-ink/45 underline-offset-2 transition hover:text-ink hover:underline">
                   or skip to 🎯 Test my skills
@@ -2061,6 +2199,11 @@ export function Practice() {
             <button onClick={() => finishPracticeRun(false)} className={btn}>✕ Stop</button>
           </div>
           <div className="flex flex-wrap items-center justify-center gap-2">
+            {!playbackOnly && (
+              <button onClick={startRecordRun} className={btn + ' !border-brand2/50'} title="Dance it once with the camera on, then watch yourself back">
+                🎥 Record my run
+              </button>
+            )}
             <button
               onClick={() => finishPracticeRun(true)}
               className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
@@ -2076,18 +2219,46 @@ export function Practice() {
             )}
           </div>
         </>
+      ) : segMode === 'recordrun' ? (
+        <>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <button onClick={() => setMirror((m) => !m)} className={mirror ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}>🪞 Mirror</button>
+            <button onClick={cancelRecordRun} className={btn}>✕ Cancel</button>
+          </div>
+          <div className="flex min-h-[24px] items-center justify-center text-sm">
+            <span className="text-ink/40">
+              {camStatus !== 'ready'
+                ? 'Warming up your camera…'
+                : '🔴 Recording your run · dance the whole thing once, then watch it back.'}
+            </span>
+          </div>
+        </>
       ) : segMode === 'replay' ? (
         <div className="flex flex-wrap items-center justify-center gap-2">
           <button onClick={replayBoth} className="rounded-xl bg-brand px-6 py-2.5 text-sm font-semibold text-cream shadow-glow transition hover:brightness-105 active:scale-95">
             ▶ Replay
           </button>
-          <button onClick={backToResults} className={btn}>‹ Back to feedback</button>
-          <button
-            onClick={exitRating}
-            className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
-          >
-            ✓ Done
-          </button>
+          {replayReturn === 'practice' ? (
+            <>
+              <button onClick={startRecordRun} className={btn}>↻ Record again</button>
+              <button
+                onClick={doneRecordReplay}
+                className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
+              >
+                ✓ Done
+              </button>
+            </>
+          ) : (
+            <>
+              <button onClick={backToResults} className={btn}>‹ Back to feedback</button>
+              <button
+                onClick={exitRating}
+                className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
+              >
+                ✓ Done
+              </button>
+            </>
+          )}
         </div>
       ) : (
         <div className="flex min-h-[24px] items-center justify-center text-sm">
@@ -2097,7 +2268,7 @@ export function Practice() {
         </div>
       )}
 
-      {rating && cameras.length > 0 && (
+      {(rating || recordRun) && cameras.length > 0 && (
         <div className="flex justify-center">
           <select value={activeCam ?? ''} onChange={(e) => void switchCamera(e.target.value)} className="max-w-[240px] truncate rounded-xl border border-line bg-panel px-2 py-1.5 text-xs text-ink/80 outline-none">
             {cameras.map((c, i) => <option key={c.deviceId || i} value={c.deviceId}>{c.label || `Camera ${i + 1}`}</option>)}

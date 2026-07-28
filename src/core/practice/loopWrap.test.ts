@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { loopWrapAction, type WrapState } from './loopWrap'
 
-const base: WrapState = { takeActive: false, segMode: 'watch', repsSoFar: 0, repLimit: Infinity }
+const base: WrapState = { takeActive: false, recordRun: false, segMode: 'watch', repsSoFar: 0, repLimit: Infinity }
 
 describe('loopWrapAction', () => {
   it('grades a recorded take, whatever the stage says', () => {
@@ -9,6 +9,12 @@ describe('loopWrapAction', () => {
     // The take outranks every other mode — it owns the pass it's recording.
     expect(loopWrapAction({ ...base, takeActive: true, segMode: 'runthrough' })).toBe('finishTake')
     expect(loopWrapAction({ ...base, takeActive: true, segMode: 'replay' })).toBe('finishTake')
+  })
+
+  it('ends a record-my-run pass after one loop, sending it to watch-back', () => {
+    expect(loopWrapAction({ ...base, recordRun: true, segMode: 'recordrun' })).toBe('finishRecordRun')
+    // A rep limit is a drilling concept; it must not cut a record pass short differently.
+    expect(loopWrapAction({ ...base, recordRun: true, segMode: 'recordrun', repLimit: 1 })).toBe('finishRecordRun')
   })
 
   it('holds at the end of a side-by-side replay', () => {
