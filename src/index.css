@@ -50,9 +50,22 @@ body {
   border-radius: 6px;
 }
 
+/* Flowing gradient text (React Bits "Gradient Text" style): the brand colors drift
+   slowly across the letters. A wide background + moving position does the motion; text
+   stays crisp because the fill is background-clipped, not animated per-glyph. */
 .text-gradient {
-  background: linear-gradient(100deg, #ff2e88 0%, #ff5fa2 45%, #22d3ee 100%);
+  background: linear-gradient(100deg, #ff2e88 0%, #ff5fa2 30%, #22d3ee 55%, #ff5fa2 80%, #ff2e88 100%);
+  background-size: 220% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  animation: gradient-flow 7s ease-in-out infinite;
+}
+@keyframes gradient-flow {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+/* Honour reduced-motion: keep the gradient, drop the drift. */
+@media (prefers-reduced-motion: reduce) {
+  .text-gradient { animation: none; background-size: 100% 100%; }
 }

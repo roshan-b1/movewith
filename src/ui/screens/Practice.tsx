@@ -55,7 +55,7 @@ function limbQuality(errorDeg: number) {
 }
 function scoreVerdict(score: number) {
   if (score >= 85) return { label: 'Nailed it', color: '#a3e635' }
-  if (score >= 70) return { label: 'Close — tighten it up', color: '#facc15' }
+  if (score >= 70) return { label: 'Close · tighten it up', color: '#facc15' }
   if (score >= 50) return { label: 'Getting there', color: '#ff9f1c' }
   return { label: 'Keep drilling this one', color: '#ff5470' }
 }
@@ -65,7 +65,7 @@ function feedbackLines(r: DetailedSectionScore): string[] {
   const limbs = (Object.entries(r.perLimb) as [Limb, { errorDeg: number; ok: boolean }][])
     .sort((a, b) => b[1].errorDeg - a[1].errorDeg)
   for (const [limb, res] of limbs.slice(0, 2)) {
-    if (!res.ok) lines.push(`${LIMB_LABEL[limb]} drifted ~${Math.round(res.errorDeg)}° from the move — ${LIMB_ADVICE[limb]}.`)
+    if (!res.ok) lines.push(`${LIMB_LABEL[limb]} drifted ~${Math.round(res.errorDeg)}° from the move: ${LIMB_ADVICE[limb]}.`)
   }
   if (r.phases.length === 3) {
     const worst = r.phases.reduce((a, b) => (b.score < a.score ? b : a))
@@ -74,7 +74,7 @@ function feedbackLines(r: DetailedSectionScore): string[] {
       lines.push(`The ${PHASE_LABEL[worst.phase]} slipped the most (${Math.round(worst.score)}% there).`)
     }
   }
-  if (lines.length === 0) lines.push('Clean run — everything tracked tight to the reference. 🔥')
+  if (lines.length === 0) lines.push('Clean run · everything tracked tight to the reference. 🔥')
   return lines
 }
 const VOICE_LABEL: Record<VoiceCommand, string> = {
@@ -1521,7 +1521,7 @@ export function Practice() {
             {segMode === 'test' && (
               <>
                 <span className="absolute left-3 top-3 z-20 rounded-2xl bg-brand2 px-3 py-2 font-display text-sm font-bold text-[#06222a] shadow-soft">
-                  🎥 Your turn — dance it!
+                  🎥 Your turn · dance it!
                 </span>
                 {camStatus === 'ready' && noBody && (
                   <p className="absolute inset-x-0 bottom-16 text-center text-sm font-semibold text-warn drop-shadow">step into frame</p>

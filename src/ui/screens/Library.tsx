@@ -125,7 +125,7 @@ export function Library() {
             {
               n: '4',
               t: 'Then test yourself',
-              d: 'Practice stays camera-free — just watch and drill. When you are ready, Test my skills turns on the camera, records you dancing to the music, scores each part, and plays your take back so you can see how you looked.',
+              d: 'Practice stays camera-free, just watch and drill. When you are ready, Test my skills turns on the camera, records you dancing to the music, scores each part, and plays your take back so you can see how you looked.',
             },
           ].map((s) => (
             <li key={s.n} className="rounded-2.5xl border border-line bg-panel/60 p-4">
@@ -310,7 +310,7 @@ export function Library() {
             ) : (
               <>
                 <p className="mt-1 text-sm text-ink/55">
-                  You need a dance first — the scoring runs against a tutorial you have uploaded.
+                  You need a dance first: the scoring runs against a tutorial you have uploaded.
                 </p>
                 <button
                   onClick={uploadForRating}
