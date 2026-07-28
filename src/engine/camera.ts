@@ -35,6 +35,29 @@ export async function startCamera(video: HTMLVideoElement, deviceId?: string): P
   }
 }
 
+/**
+ * A short, action-oriented message for a getUserMedia failure, so a blocked or missing
+ * camera reads as "here's how to fix it" instead of a raw error string. The browser's
+ * own allow-camera prompt fires automatically on the first request; this covers what
+ * happens when it's denied, dismissed, or there's no usable camera.
+ */
+export function cameraErrorMessage(err: unknown): string {
+  const name = err instanceof DOMException ? err.name : ''
+  switch (name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return "Camera access is blocked, so this feature can't run. Allow the camera for this site in your browser, then try again."
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+      return "No camera found. Connect one (or switch cameras), then try again."
+    case 'NotReadableError':
+    case 'AbortError':
+      return "Your camera is busy in another app. Close it, then try again."
+    default:
+      return err instanceof Error && err.message ? err.message : 'Could not start the camera.'
+  }
+}
+
 /** List available video input devices. Labels are only populated after permission. */
 export async function listVideoInputs(): Promise<MediaDeviceInfo[]> {
   if (!navigator.mediaDevices?.enumerateDevices) return []

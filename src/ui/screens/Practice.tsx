@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSession } from '../../state/sessionStore'
 import { PlaybackController } from '../../engine/playback'
 import { PracticeEngine, type ReferenceContext } from '../../engine/practiceEngine'
-import { startCamera, listVideoInputs, preferredCameraId, type CameraHandle } from '../../engine/camera'
+import { startCamera, listVideoInputs, preferredCameraId, cameraErrorMessage, type CameraHandle } from '../../engine/camera'
 import { getPoseProvider } from '../../providers/instance'
 import { anglesAtFrames, sectionAnglesFrames, nearestFrameIndex } from '../../core/reference/build'
 import { medianX } from '../../core/pose/people'
@@ -625,7 +625,7 @@ export function Practice() {
       } catch (e) {
         if (disposed) return
         setCamStatus('error')
-        setCamError(e instanceof Error ? e.message : String(e))
+        setCamError(cameraErrorMessage(e))
       }
     })()
     return () => {
@@ -1993,6 +1993,26 @@ export function Practice() {
             </div>
           </div>
         )}
+        {/* Camera blocked/missing during a record-my-run — say so plainly and offer a retry. */}
+        {inGo && segMode === 'recordrun' && camStatus === 'error' && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-sm rounded-2.5xl border border-line bg-panel/95 p-5 text-center shadow-soft">
+              <p className="font-display text-lg font-bold">Camera needed 🎥</p>
+              <p className="mt-1 text-sm text-ink/60">
+                {camError ?? "We can't record your run without camera access. Allow the camera for this site, then try again."}
+              </p>
+              <div className="mt-4 flex justify-center gap-2">
+                <button onClick={startRecordRun} className={btn}>↻ Try again</button>
+                <button
+                  onClick={cancelRecordRun}
+                  className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
+                >
+                  ✕ Never mind
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {countdown > 0 && (
           <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/45 backdrop-blur-[1px]">
             <p className="text-xs uppercase tracking-[0.2em] text-cream/70">{countdownLabel}</p>
@@ -2230,10 +2250,12 @@ export function Practice() {
             <button onClick={cancelRecordRun} className={btn}>✕ Cancel</button>
           </div>
           <div className="flex min-h-[24px] items-center justify-center text-sm">
-            <span className="text-ink/40">
-              {camStatus !== 'ready'
-                ? 'Warming up your camera…'
-                : '🔴 Recording your run · dance the whole thing once, then watch it back.'}
+            <span className={camStatus === 'error' ? 'text-bad' : 'text-ink/40'}>
+              {camStatus === 'error'
+                ? (camError ?? "Camera not available, so this feature can't run.")
+                : camStatus !== 'ready'
+                  ? 'Warming up your camera…'
+                  : '🔴 Recording your run · dance the whole thing once, then watch it back.'}
             </span>
           </div>
         </>
