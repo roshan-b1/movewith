@@ -106,6 +106,7 @@ export function Practice() {
   const openIntent = useSession((s) => s.openIntent)
   const back = useSession((s) => s.back)
   const updateProgress = useSession((s) => s.updateProgress)
+  const saveReport = useSession((s) => s.saveReport)
   const renameTrack = useSession((s) => s.renameTrack)
   const selectDancer = useSession((s) => s.selectDancer)
 
@@ -880,6 +881,9 @@ export function Practice() {
         setRunSummary(summaries[0] ?? null)
         setMultiRun(null)
       }
+      // Save a report for the dance card (the best dancer's run when it's a group).
+      const best = summaries.reduce((a, b) => (b.overall > a.overall ? b : a))
+      void saveReport(tr.id, { at: Date.now(), overall: best.overall, nailed: best.nailed, close: best.close, off: best.off })
       setSegMode('summary'); segModeRef.current = 'summary'
       return
     }

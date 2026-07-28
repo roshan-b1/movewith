@@ -3,7 +3,7 @@
 // practice screen to avoid re-rendering React on every frame.
 
 import { create } from 'zustand'
-import type { ReferenceTrack, DanceProgress } from '../core/reference/types'
+import type { ReferenceTrack, DanceProgress, RunReport } from '../core/reference/types'
 import { generateDemoDance, DEMO_TRACK_ID, OLD_DEMO_TRACK_IDS } from '../core/demo/demoDance'
 
 // The generated demo routine rides on the 3D dancer, which isn't presentable yet, so the
@@ -37,6 +37,8 @@ export interface SessionState {
   activeTrack: ReferenceTrack | null
   activeVideoUrl: string | null
   progress: DanceProgress | null
+  /** Saved Test-my-skills reports per track (newest first), for the library cards. */
+  reportsByTrack: Record<string, RunReport[]>
   /** What the practice screen should open into (drilling vs "Test my skills"). */
   openIntent: OpenIntent
   status: 'idle' | 'loading' | 'extracting' | 'error'
@@ -51,6 +53,8 @@ export interface SessionState {
   selectDancer: (index: number) => Promise<void>
   removeTrack: (id: string) => Promise<void>
   updateProgress: (next: DanceProgress) => Promise<void>
+  /** Append a Test-my-skills result to a track's saved reports (kept to the last 20). */
+  saveReport: (trackId: string, report: RunReport) => Promise<void>
   back: () => void
   clearError: () => void
 }
@@ -65,6 +69,7 @@ export const useSession = create<SessionState>((set, get) => ({
   activeTrack: null,
   activeVideoUrl: null,
   progress: null,
+  reportsByTrack: {},
   openIntent: 'practice',
   status: 'idle',
   extract: null,
@@ -84,7 +89,14 @@ export const useSession = create<SessionState>((set, get) => ({
       if (ENABLE_DEMO_TRACK && !(await getTrack(DEMO_TRACK_ID))) {
         await saveTrack(generateDemoDance(Date.now()))
       }
-      set({ tracks: await listTracks(), status: 'idle' })
+      const list = await listTracks()
+      // Pull each dance's saved reports so the library cards can show them at a glance.
+      const reportsByTrack: Record<string, RunReport[]> = {}
+      for (const t of list) {
+        const p = await getProgress(t.id)
+        if (p?.reports?.length) reportsByTrack[t.id] = p.reports
+      }
+      set({ tracks: list, reportsByTrack, status: 'idle' })
     } catch (e) {
       set({ status: 'error', error: errMsg(e) })
     }
@@ -160,12 +172,29 @@ export const useSession = create<SessionState>((set, get) => ({
 
   async removeTrack(id) {
     await deleteTrack(id)
-    set({ tracks: await listTracks() })
+    const tracks = await listTracks()
+    set((s) => {
+      const { [id]: _gone, ...reportsByTrack } = s.reportsByTrack
+      return { tracks, reportsByTrack }
+    })
   },
 
   async updateProgress(next) {
     await saveProgress(next)
     set({ progress: next })
+  },
+
+  async saveReport(trackId, report) {
+    const cur = (await getProgress(trackId)) ?? freshProgress(trackId)
+    const reports = [report, ...(cur.reports ?? [])].slice(0, 20)
+    const next = { ...cur, reports }
+    await saveProgress(next)
+    set((s) => ({
+      reportsByTrack: { ...s.reportsByTrack, [trackId]: reports },
+      // Keep the active track's in-memory progress in step so a later setup save doesn't
+      // clobber the reports we just wrote.
+      progress: s.progress?.trackId === trackId ? next : s.progress,
+    }))
   },
 
   back() {

@@ -64,6 +64,17 @@ export interface PracticeSetup {
   skip?: number[]
 }
 
+/** One saved "Test my skills" result, shown as a report on the dance card. */
+export interface RunReport {
+  /** Epoch millis the run finished. */
+  at: number
+  /** Overall run score 0..100 (best dancer's, for a group run). */
+  overall: number
+  nailed: number
+  close: number
+  off: number
+}
+
 /** Per-dance learning progress, persisted alongside the track. */
 export interface DanceProgress {
   trackId: string
@@ -75,6 +86,8 @@ export interface DanceProgress {
   completed?: number[]
   /** Best full-run score 0..100, if attempted. */
   bestFullRun?: number
+  /** Saved Test-my-skills results, newest first. */
+  reports?: RunReport[]
   /** The dancer's saved trim + segments + settings for this track. */
   setup?: PracticeSetup
 }

@@ -1,6 +1,22 @@
 import { useRef, useState } from 'react'
 import { useSession } from '../../state/sessionStore'
 
+/** Verdict color for a 0..100 score, matching the rater. */
+function scoreColor(score: number): string {
+  if (score >= 85) return '#a3e635'
+  if (score >= 70) return '#facc15'
+  if (score >= 50) return '#ff9f1c'
+  return '#ff5470'
+}
+/** Short "when" label from an epoch time (today / Nd ago / a date). */
+function whenLabel(at: number, now: number): string {
+  const days = Math.floor((now - at) / 86_400_000)
+  if (days <= 0) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 7) return `${days}d ago`
+  return new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
 export function Library() {
   const tracks = useSession((s) => s.tracks)
   const openTrack = useSession((s) => s.openTrack)
@@ -11,6 +27,7 @@ export function Library() {
   const extract = useSession((s) => s.extract)
   const error = useSession((s) => s.error)
   const clearError = useSession((s) => s.clearError)
+  const reportsByTrack = useSession((s) => s.reportsByTrack)
 
   const fileInput = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
@@ -18,6 +35,8 @@ export function Library() {
   const [renaming, setRenaming] = useState<string | null>(null)
   const [draftName, setDraftName] = useState('')
   const [pickRate, setPickRate] = useState(false)
+  /** Track id whose full report history is open in a modal, if any. */
+  const [viewReports, setViewReports] = useState<string | null>(null)
 
   // Only dances that were analyzed (have pose frames) can be scored.
   const scorable = tracks.filter((t) => t.frames.length > 0)
@@ -229,6 +248,25 @@ export function Library() {
             <p className="mt-1 px-1 text-xs text-ink/50">
               {Math.round(t.tempo.bpm)} BPM · {Math.round(t.source.durationSec)}s
             </p>
+            {/* Reports: shows up once this dance has been through Test my skills. */}
+            {(reportsByTrack[t.id]?.length ?? 0) > 0 && (() => {
+              const reports = reportsByTrack[t.id]!
+              const best = reports.reduce((m, r) => Math.max(m, r.overall), 0)
+              return (
+                <button
+                  onClick={() => setViewReports(t.id)}
+                  className="mx-1 mt-2 flex items-center justify-between gap-2 rounded-xl border border-line bg-ink/[0.03] px-2.5 py-1.5 text-left transition hover:border-brand2/50"
+                  title="See your Test my skills reports"
+                >
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-ink/60">
+                    📊 {reports.length} {reports.length === 1 ? 'report' : 'reports'}
+                  </span>
+                  <span className="text-xs font-semibold" style={{ color: scoreColor(best) }}>
+                    best {Math.round(best)}%
+                  </span>
+                </button>
+              )
+            })()}
             <div className="mt-4 flex items-center justify-between gap-2 px-1 pb-1">
               {confirmDelete === t.id ? (
                 <div className="flex w-full items-center justify-between gap-2">
@@ -320,6 +358,37 @@ export function Library() {
                 </button>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Reports history — every Test my skills run for one dance, newest first */}
+      {viewReports && (reportsByTrack[viewReports]?.length ?? 0) > 0 && (
+        <div
+          onClick={() => setViewReports(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+        >
+          <div onClick={(e) => e.stopPropagation()} className="flex max-h-[80vh] w-full max-w-md flex-col rounded-2.5xl border border-line bg-panel p-5 shadow-soft">
+            <div className="flex items-center justify-between">
+              <p className="font-display text-lg font-bold">
+                📊 {tracks.find((t) => t.id === viewReports)?.name ?? 'Reports'}
+              </p>
+              <button onClick={() => setViewReports(null)} className="text-sm text-ink/50 transition hover:text-ink">✕</button>
+            </div>
+            <p className="mt-1 text-xs text-ink/50">Every Test my skills run, newest first.</p>
+            <div className="mt-3 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
+              {reportsByTrack[viewReports]!.map((r, i) => (
+                <div key={r.at + '-' + i} className="flex items-center gap-3 rounded-xl border border-line bg-ink/[0.03] px-3 py-2">
+                  <span className="font-display text-2xl font-bold tabular-nums" style={{ color: scoreColor(r.overall) }}>
+                    {Math.round(r.overall)}%
+                  </span>
+                  <span className="flex-1 text-xs text-ink/55">
+                    {r.nailed} nailed · {r.close} close · {r.off} to work on
+                  </span>
+                  <span className="shrink-0 text-xs text-ink/40">{whenLabel(r.at, Date.now())}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
