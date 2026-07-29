@@ -2268,7 +2268,7 @@ export function Practice() {
                 onClick={doneRecordReplay}
                 className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
               >
-                ▶ Back to the loop
+                ✓ Back to practice
               </button>
             </>
           ) : (
