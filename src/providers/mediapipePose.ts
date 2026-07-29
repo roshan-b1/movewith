@@ -50,7 +50,10 @@ export interface MediaPipePoseOptions {
   /** Model for offline extraction (one-time). Defaults to the accurate 'full' model
    *  so complex tutorial movement is captured precisely. */
   imageModelUrl?: string
-  /** Model for the live webcam loop. Defaults to fast 'lite' to hold real-time fps. */
+  /** Model for the live webcam loop. Defaults to 'full' so you're tracked as accurately
+   *  as the reference you're scored against (both 'full'); dance is exactly the fast,
+   *  complex motion the lite model reads worst. The 30fps detection cap means a slower
+   *  device just runs fewer detections rather than stalling. */
   videoModelUrl?: string
   wasmBase?: string
 }
@@ -65,7 +68,7 @@ export class MediaPipePoseProvider implements PoseProvider {
     this.opts = {
       delegate: opts.delegate ?? 'GPU',
       imageModelUrl: opts.imageModelUrl ?? POSE_MODELS.full,
-      videoModelUrl: opts.videoModelUrl ?? POSE_MODELS.lite,
+      videoModelUrl: opts.videoModelUrl ?? POSE_MODELS.full,
       wasmBase: opts.wasmBase ?? WASM_BASE,
     }
   }
@@ -91,16 +94,31 @@ export class MediaPipePoseProvider implements PoseProvider {
         minTrackingConfidence: 0.5,
       })
 
+    // Try the preferred model, but never let a heavier model's failure (bad network, weak
+    // GPU, out-of-memory) break tracking — fall back to the always-available 'lite' model.
+    const makeWithFallback = async (runningMode: 'IMAGE' | 'VIDEO', delegate: 'GPU' | 'CPU', modelUrl: string) => {
+      try {
+        return await make(runningMode, delegate, modelUrl)
+      } catch (err) {
+        if (modelUrl === POSE_MODELS.lite) throw err
+        console.warn(`[pose] ${runningMode} model failed to load; falling back to lite`, err)
+        return make(runningMode, delegate, POSE_MODELS.lite)
+      }
+    }
+
+    const build = async (delegate: 'GPU' | 'CPU') => {
+      this.image = await makeWithFallback('IMAGE', delegate, this.opts.imageModelUrl)
+      this.video = await makeWithFallback('VIDEO', delegate, this.opts.videoModelUrl)
+    }
+
     try {
-      this.image = await make('IMAGE', this.opts.delegate, this.opts.imageModelUrl)
-      this.video = await make('VIDEO', this.opts.delegate, this.opts.videoModelUrl)
+      await build(this.opts.delegate)
     } catch (err) {
       // GPU delegate can fail on some machines/browsers — fall back to CPU once.
       if (this.opts.delegate === 'GPU') {
         console.warn('[pose] GPU delegate failed, falling back to CPU', err)
         this.opts.delegate = 'CPU'
-        this.image = await make('IMAGE', 'CPU', this.opts.imageModelUrl)
-        this.video = await make('VIDEO', 'CPU', this.opts.videoModelUrl)
+        await build('CPU')
       } else {
         throw err
       }

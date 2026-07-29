@@ -176,7 +176,14 @@ export class PracticeEngine {
     let confN = 0
 
     if (this.webcam.readyState >= 2) {
-      const detected = this.provider.detectLiveAll(this.webcam, tsMs)
+      // Guard the one call that reaches out to MediaPipe: a transient detection error
+      // (GPU hiccup, a bad frame) must skip that frame, never kill the whole loop.
+      let detected: ReturnType<PoseProvider['detectLiveAll']> = []
+      try {
+        detected = this.provider.detectLiveAll(this.webcam, tsMs)
+      } catch (err) {
+        console.warn('[practice] live detection skipped after an error', err)
+      }
       const assigned = assignPeopleToSlots(detected, slots)
       const tSec = tsMs / 1000
 

@@ -1896,10 +1896,29 @@ export function Practice() {
                   {runSummary.nailed} nailed · {runSummary.close} close · {runSummary.off} to work on
                 </p>
               </div>
+              {/* The single biggest thing to fix: the limb that was off in the most segments. */}
+              {(() => {
+                const tally = new Map<Limb, number>()
+                for (const s of runSummary.segments) {
+                  if (s.grade !== 'nailed' && s.worstLimb) tally.set(s.worstLimb, (tally.get(s.worstLimb) ?? 0) + 1)
+                }
+                const worst = [...tally.entries()].sort((a, b) => b[1] - a[1])[0]
+                if (!worst) return null
+                return (
+                  <p className="mt-3 rounded-xl border border-warn/40 bg-warn/[0.08] px-3 py-2 text-sm text-ink/80">
+                    Biggest fix: your <b className="text-ink">{LIMB_LABEL[worst[0]].toLowerCase()}</b> drifted the most. {LIMB_ADVICE[worst[0]]}.
+                  </p>
+                )
+              })()}
               <div className="mt-4 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
                 {runSummary.segments.map((s) => {
                   const tint = s.grade === 'nailed' ? '#a3e635' : s.grade === 'close' ? '#facc15' : '#ff5470'
-                  const word = s.grade === 'nailed' ? 'Nailed it' : s.grade === 'close' ? 'Close' : 'Needs work'
+                  // Say what was off, not just a grade: the worst limb is already computed.
+                  const note = s.grade === 'nailed'
+                    ? 'Nailed it'
+                    : s.worstLimb
+                      ? `${LIMB_LABEL[s.worstLimb]} off`
+                      : s.grade === 'close' ? 'Close' : 'Needs work'
                   return (
                     <div key={s.index} className="flex items-center gap-2 rounded-xl border border-line bg-ink/[0.03] px-3 py-2">
                       <span className="w-16 shrink-0 text-xs font-semibold text-ink/70">Segment {s.index + 1}</span>
@@ -1907,7 +1926,7 @@ export function Practice() {
                         <div className="h-full rounded-full" style={{ width: `${Math.round(s.score)}%`, background: tint }} />
                       </div>
                       <span className="w-9 shrink-0 text-right text-xs tabular-nums text-ink/60">{Math.round(s.score)}%</span>
-                      <span className="w-20 shrink-0 text-right text-xs font-semibold" style={{ color: tint }}>{word}</span>
+                      <span className="w-[76px] shrink-0 text-right text-[11px] font-semibold" style={{ color: tint }}>{note}</span>
                     </div>
                   )
                 })}
