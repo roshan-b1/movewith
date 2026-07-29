@@ -1267,25 +1267,25 @@ export function Practice() {
   }
   finishRecordRunRef.current = finishRecordRun
 
-  /** Bail out of a record pass without watching back (Cancel, or the tab going hidden). */
+  /** Stop recording and drop the camera, then resume the looping run-through camera-free.
+   *  Used on Cancel, a blocked camera, or the tab going hidden mid-record. */
   function cancelRecordRun() {
     clearCountdown()
     recordStartedRef.current = false
     dropTakeRecording()
     setRecordRun(false); recordRunRef.current = false
     playbackRef.current?.pause(); setPlaying(false)
-    setSegMode('watch'); segModeRef.current = 'watch'
-    gotoMove(moveIdxRef.current)
+    startPracticeRun()
   }
   cancelRecordRunRef.current = cancelRecordRun
 
-  /** Done watching a record-my-run back: turn the camera off, return to plain practice. */
+  /** Done watching a recorded run back: drop the camera and return to the looping
+   *  run-through, so you can keep dancing it (and record another whenever you want). */
   function doneRecordReplay() {
     takeVideoRef.current?.pause()
     playbackRef.current?.setRate(rateRef.current)
     setRecordRun(false); recordRunRef.current = false
-    setSegMode('watch'); segModeRef.current = 'watch'
-    gotoMove(moveIdxRef.current)
+    startPracticeRun()
   }
 
   // Once the camera is warm, actually start the recorded pass (3-2-1, then play + record).
@@ -2164,24 +2164,15 @@ export function Practice() {
           {moves.length > 0 && completed.length >= moves.length - skip.length && (
             <div className="flex flex-col items-center gap-2 rounded-2xl border border-brand2/40 bg-brand2/[0.08] px-4 py-3 text-center">
               <p className="text-sm font-semibold text-ink">You got every segment 🎉</p>
-              <p className="text-xs text-ink/55">Now put it together: dance the whole thing start to finish.</p>
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                <button
-                  onClick={startPracticeRun}
-                  className="rounded-xl bg-brand2 px-5 py-2.5 text-sm font-bold text-[#06222a] shadow-soft transition hover:brightness-105 active:scale-95"
-                >
-                  ▶ Full run-through
-                </button>
-                {!playbackOnly && (
-                  <button
-                    onClick={startRecordRun}
-                    title="Dance it once with the camera on, then watch yourself back"
-                    className="rounded-xl border border-brand2/50 bg-brand2/15 px-5 py-2.5 text-sm font-bold text-ink transition hover:bg-brand2/25 active:scale-95"
-                  >
-                    🎥 Record my run
-                  </button>
-                )}
-              </div>
+              <p className="text-xs text-ink/55">
+                Now put it together: dance the whole thing on a loop.{!playbackOnly && ' Record any run to watch yourself back.'}
+              </p>
+              <button
+                onClick={startPracticeRun}
+                className="rounded-xl bg-brand2 px-5 py-2.5 text-sm font-bold text-[#06222a] shadow-soft transition hover:brightness-105 active:scale-95"
+              >
+                ▶ Full run-through
+              </button>
               {!playbackOnly && (
                 <button onClick={enterRating} className="text-xs text-ink/45 underline-offset-2 transition hover:text-ink hover:underline">
                   or skip to 🎯 Test my skills
@@ -2224,8 +2215,12 @@ export function Practice() {
           </div>
           <div className="flex flex-wrap items-center justify-center gap-2">
             {!playbackOnly && (
-              <button onClick={startRecordRun} className={btn + ' !border-brand2/50'} title="Dance it once with the camera on, then watch yourself back">
-                🎥 Record my run
+              <button
+                onClick={startRecordRun}
+                className="rounded-xl border border-brand2/50 bg-brand2/15 px-4 py-2.5 text-sm font-bold text-ink transition hover:bg-brand2/25 active:scale-95"
+                title="Record this run with the camera on, then watch yourself side by side"
+              >
+                🎥 Record this run
               </button>
             )}
             <button
@@ -2239,7 +2234,9 @@ export function Practice() {
             {toast ? (
               <span className="rounded-full bg-good/20 px-3 py-1 font-semibold text-good">{toast}</span>
             ) : (
-              <span className="text-ink/40">It keeps looping · no camera, just you and the music. ✓ Got it when it clicks.</span>
+              <span className="text-ink/40">
+                It keeps looping · dance it as many times as you like.{!playbackOnly && ' 🎥 Record this run to watch yourself back.'}
+              </span>
             )}
           </div>
         </>
@@ -2266,12 +2263,12 @@ export function Practice() {
           </button>
           {replayReturn === 'practice' ? (
             <>
-              <button onClick={startRecordRun} className={btn}>↻ Record again</button>
+              <button onClick={startRecordRun} className={btn}>↻ Record another</button>
               <button
                 onClick={doneRecordReplay}
                 className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
               >
-                ✓ Done
+                ▶ Back to the loop
               </button>
             </>
           ) : (
