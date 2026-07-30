@@ -37,10 +37,19 @@ deliberate "do later" so the current app stays focused.
 
 ## Content / modes
 
-- **Remix mode.** Combine sections from multiple tutorials into a custom routine and dance it
-  to your own uploaded music track. (Foundation fits: a ReferenceTrack is a serializable
-  segment/frame list, so stitching is mostly concatenation; the open problem is re-aligning
-  tempos across clips.)
+- **Mix / medley mode — BUILT.** Stitch parts of several dances into one routine (medleys,
+  wedding/showcase performances that jump between songs). See `MIX.md` for the architecture.
+  Shipped: "Make a mix" on the library → editor where you switch to any uploaded dance in
+  any order, set an in/out on it, and drag (or tap ＋) the part onto an always-visible mix
+  track; reorder by drag or ‹ ›, delete with ✕, live-preview the whole medley, name + save.
+  Saved mixes live in "Your mixes" and practice like a dance: drill each part on a loop
+  (slow / mirror), then a full run-through, with the same "got every part → run it through"
+  beat as normal practice. Data model: `Mix = { clips: {sourceTrackId,startSec,endSec}[] }`
+  referencing source tracks' video blobs (no blob of its own; deleting a mix never touches
+  the sources). Tempos need not align. No camera/scoring on mixes (deliberate).
+  - **Future on top of this:** camera scoring for mixes; sub-segmenting a part into smaller
+    drill chunks; crossfading audio at the seams; and combining across clips is done, but a
+    "remix from segments you already cut in practice" shortcut could be added.
 - **Music-video mode.** Pick a dancer to follow through a full music video (depends on
   pick-a-character multi-dancer select), mirror them the whole song, then play your run back.
 - **Built-in famous dances.** A library of known routines (Macarena, etc.) ready to learn,

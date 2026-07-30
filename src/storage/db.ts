@@ -4,25 +4,32 @@
 
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { ReferenceTrack, DanceProgress } from '../core/reference/types'
+import type { Mix } from '../core/mix/timeline'
 
 interface MoveWithDB extends DBSchema {
   tracks: { key: string; value: ReferenceTrack }
   videos: { key: string; value: Blob }
   progress: { key: string; value: DanceProgress }
+  // v2: mixes (medleys). A mix references source tracks' videos by id — it stores no video
+  // blob of its own, so deleting a mix never touches the source dances.
+  mixes: { key: string; value: Mix }
 }
 
 const DB_NAME = 'movewith'
-const DB_VERSION = 1
+const DB_VERSION = 2
 
 let dbPromise: Promise<IDBPDatabase<MoveWithDB>> | null = null
 
 function db(): Promise<IDBPDatabase<MoveWithDB>> {
   if (!dbPromise) {
     dbPromise = openDB<MoveWithDB>(DB_NAME, DB_VERSION, {
+      // idb runs upgrade with the OLD version's stores present; create only what's missing
+      // so a v1 user keeps their tracks/videos/progress and just gains the mixes store.
       upgrade(database) {
         if (!database.objectStoreNames.contains('tracks')) database.createObjectStore('tracks')
         if (!database.objectStoreNames.contains('videos')) database.createObjectStore('videos')
         if (!database.objectStoreNames.contains('progress')) database.createObjectStore('progress')
+        if (!database.objectStoreNames.contains('mixes')) database.createObjectStore('mixes')
       },
     })
   }
@@ -70,4 +77,23 @@ export async function getProgress(trackId: string): Promise<DanceProgress | unde
 
 export async function saveProgress(progress: DanceProgress): Promise<void> {
   await (await db()).put('progress', progress, progress.trackId)
+}
+
+// --- Mixes (medleys) ------------------------------------------------------
+
+export async function saveMix(mix: Mix): Promise<void> {
+  await (await db()).put('mixes', mix, mix.id)
+}
+
+export async function getMix(id: string): Promise<Mix | undefined> {
+  return (await db()).get('mixes', id)
+}
+
+export async function listMixes(): Promise<Mix[]> {
+  const all = await (await db()).getAll('mixes')
+  return all.sort((a, b) => b.createdAt - a.createdAt)
+}
+
+export async function deleteMix(id: string): Promise<void> {
+  await (await db()).delete('mixes', id)
 }

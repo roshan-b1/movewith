@@ -2,18 +2,23 @@ import { useEffect } from 'react'
 import { useSession } from '../state/sessionStore'
 import { Library } from './screens/Library'
 import { Practice } from './screens/Practice'
+import { MixEditor } from './screens/MixEditor'
+import { MixPractice } from './screens/MixPractice'
 
 export function App() {
   const screen = useSession((s) => s.screen)
   const init = useSession((s) => s.init)
   const status = useSession((s) => s.status)
   const activeTrack = useSession((s) => s.activeTrack)
+  const activeMix = useSession((s) => s.activeMix)
 
   useEffect(() => {
     void init()
   }, [init])
 
   if (screen === 'practice' && activeTrack) return <Practice />
+  if (screen === 'mixEditor') return <MixEditor />
+  if (screen === 'mixPractice' && activeMix) return <MixPractice />
 
   if (status === 'loading' && useSession.getState().tracks.length === 0) {
     return (

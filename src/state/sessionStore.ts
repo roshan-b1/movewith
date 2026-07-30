@@ -4,6 +4,7 @@
 
 import { create } from 'zustand'
 import type { ReferenceTrack, DanceProgress, RunReport } from '../core/reference/types'
+import type { Mix } from '../core/mix/timeline'
 import { generateDemoDance, DEMO_TRACK_ID, OLD_DEMO_TRACK_IDS } from '../core/demo/demoDance'
 
 // The generated demo routine rides on the 3D dancer, which isn't presentable yet, so the
@@ -25,9 +26,13 @@ import {
   getProgress,
   saveProgress,
   deleteTrack,
+  saveMix as dbSaveMix,
+  getMix,
+  listMixes,
+  deleteMix as dbDeleteMix,
 } from '../storage/db'
 
-export type Screen = 'library' | 'practice'
+export type Screen = 'library' | 'practice' | 'mixEditor' | 'mixPractice'
 /** Why the practice screen was opened: to learn/drill, or to be scored by the rater. */
 export type OpenIntent = 'practice' | 'rate'
 
@@ -39,6 +44,13 @@ export interface SessionState {
   progress: DanceProgress | null
   /** Saved Test-my-skills reports per track (newest first), for the library cards. */
   reportsByTrack: Record<string, RunReport[]>
+  /** Saved mixes (medleys), newest first, for the library. */
+  mixes: Mix[]
+  /** The mix being edited or practiced (null in the editor means a fresh draft). */
+  activeMix: Mix | null
+  /** Object URLs for source dances' videos, keyed by track id — used by the mix editor and
+   *  mix playback. Populated on demand and revoked when leaving a mix screen. */
+  sourceUrls: Record<string, string>
   /** What the practice screen should open into (drilling vs "Test my skills"). */
   openIntent: OpenIntent
   status: 'idle' | 'loading' | 'extracting' | 'error'
@@ -55,6 +67,16 @@ export interface SessionState {
   updateProgress: (next: DanceProgress) => Promise<void>
   /** Append a Test-my-skills result to a track's saved reports (kept to the last 20). */
   saveReport: (trackId: string, report: RunReport) => Promise<void>
+  /** Open the mix editor: pass a saved mix to edit it, or nothing for a fresh medley. */
+  openMixEditor: (existing?: Mix) => Promise<void>
+  /** Open a saved mix to practice it. */
+  openMix: (id: string) => Promise<void>
+  /** Load + cache a source dance's video object URL (for the editor and mix playback). */
+  ensureSourceUrl: (trackId: string) => Promise<string | null>
+  /** Persist a mix (create or update) and refresh the library list. */
+  saveMix: (mix: Mix) => Promise<void>
+  /** Delete a saved mix. Never touches the source dances. */
+  removeMix: (id: string) => Promise<void>
   back: () => void
   clearError: () => void
 }
@@ -70,6 +92,9 @@ export const useSession = create<SessionState>((set, get) => ({
   activeVideoUrl: null,
   progress: null,
   reportsByTrack: {},
+  mixes: [],
+  activeMix: null,
+  sourceUrls: {},
   openIntent: 'practice',
   status: 'idle',
   extract: null,
@@ -96,7 +121,7 @@ export const useSession = create<SessionState>((set, get) => ({
         const p = await getProgress(t.id)
         if (p?.reports?.length) reportsByTrack[t.id] = p.reports
       }
-      set({ tracks: list, reportsByTrack, status: 'idle' })
+      set({ tracks: list, reportsByTrack, mixes: await listMixes(), status: 'idle' })
     } catch (e) {
       set({ status: 'error', error: errMsg(e) })
     }
@@ -172,10 +197,20 @@ export const useSession = create<SessionState>((set, get) => ({
 
   async removeTrack(id) {
     await deleteTrack(id)
+    // A deleted dance may be sliced into saved mixes. Strip those clips so no mix is left
+    // pointing at a source that no longer exists (which would play a black stage); a mix
+    // left with no clips is removed entirely.
+    for (const mix of await listMixes()) {
+      if (!mix.clips.some((c) => c.sourceTrackId === id)) continue
+      const clips = mix.clips.filter((c) => c.sourceTrackId !== id)
+      if (clips.length === 0) await dbDeleteMix(mix.id)
+      else await dbSaveMix({ ...mix, clips })
+    }
     const tracks = await listTracks()
+    const mixes = await listMixes()
     set((s) => {
       const { [id]: _gone, ...reportsByTrack } = s.reportsByTrack
-      return { tracks, reportsByTrack }
+      return { tracks, reportsByTrack, mixes }
     })
   },
 
@@ -197,10 +232,58 @@ export const useSession = create<SessionState>((set, get) => ({
     }))
   },
 
+  async ensureSourceUrl(trackId) {
+    const cached = get().sourceUrls[trackId]
+    if (cached) return cached
+    const track = await getTrack(trackId)
+    if (!track?.videoBlobKey) return null
+    const blob = await getVideo(track.videoBlobKey)
+    if (!blob) return null
+    const url = URL.createObjectURL(blob)
+    set((s) => ({ sourceUrls: { ...s.sourceUrls, [trackId]: url } }))
+    return url
+  },
+
+  async openMixEditor(existing) {
+    // Warm the source URLs for an existing mix so its preview plays right away.
+    if (existing) {
+      for (const id of [...new Set(existing.clips.map((c) => c.sourceTrackId))]) {
+        await get().ensureSourceUrl(id)
+      }
+    }
+    set({ activeMix: existing ?? null, screen: 'mixEditor' })
+  },
+
+  async openMix(id) {
+    set({ status: 'loading', error: null })
+    try {
+      const mix = await getMix(id)
+      if (!mix) throw new Error('Mix not found')
+      for (const src of [...new Set(mix.clips.map((c) => c.sourceTrackId))]) {
+        await get().ensureSourceUrl(src)
+      }
+      set({ activeMix: mix, screen: 'mixPractice', status: 'idle' })
+    } catch (e) {
+      set({ status: 'error', error: errMsg(e) })
+    }
+  },
+
+  async saveMix(mix) {
+    await dbSaveMix(mix)
+    set({ mixes: await listMixes(), activeMix: mix })
+  },
+
+  async removeMix(id) {
+    await dbDeleteMix(id)
+    set((s) => ({ mixes: s.mixes.filter((m) => m.id !== id), activeMix: s.activeMix?.id === id ? null : s.activeMix }))
+  },
+
   back() {
-    const prev = get().activeVideoUrl
-    if (prev) URL.revokeObjectURL(prev)
-    set({ screen: 'library', activeTrack: null, activeVideoUrl: null, progress: null })
+    const s = get()
+    if (s.activeVideoUrl) URL.revokeObjectURL(s.activeVideoUrl)
+    // Free every source-video URL opened for the mix editor/practice.
+    for (const url of Object.values(s.sourceUrls)) URL.revokeObjectURL(url)
+    set({ screen: 'library', activeTrack: null, activeVideoUrl: null, progress: null, activeMix: null, sourceUrls: {} })
   },
 
   clearError() {

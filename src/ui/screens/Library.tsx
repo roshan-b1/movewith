@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { useSession } from '../../state/sessionStore'
+import { mixDuration } from '../../core/mix/timeline'
 
 /** Verdict color for a 0..100 score, matching the rater. */
 function scoreColor(score: number): string {
@@ -28,6 +29,10 @@ export function Library() {
   const error = useSession((s) => s.error)
   const clearError = useSession((s) => s.clearError)
   const reportsByTrack = useSession((s) => s.reportsByTrack)
+  const mixes = useSession((s) => s.mixes)
+  const openMixEditor = useSession((s) => s.openMixEditor)
+  const openMix = useSession((s) => s.openMix)
+  const removeMix = useSession((s) => s.removeMix)
 
   const fileInput = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
@@ -37,6 +42,8 @@ export function Library() {
   const [pickRate, setPickRate] = useState(false)
   /** Track id whose full report history is open in a modal, if any. */
   const [viewReports, setViewReports] = useState<string | null>(null)
+  /** Mix id pending delete confirmation. */
+  const [confirmDeleteMix, setConfirmDeleteMix] = useState<string | null>(null)
 
   // Only dances that were analyzed (have pose frames) can be scored.
   const scorable = tracks.filter((t) => t.frames.length > 0)
@@ -120,6 +127,24 @@ export function Library() {
           <p className="mt-1 text-xs text-ink/55">Dance any of your tutorials on camera and get scored, part by part.</p>
         </button>
       </div>
+
+      {/* Make a mix: stitch parts of several dances into one medley (no tutorial needed). */}
+      {tracks.some((t) => t.videoBlobKey) && (
+        <button
+          onClick={() => void openMixEditor()}
+          className="group mb-10 flex w-full items-center gap-4 rounded-2.5xl border border-line bg-ink/[0.03] px-5 py-4 text-left transition hover:border-ink/30 hover:bg-ink/[0.06]"
+        >
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-ink/10 text-2xl transition-transform duration-200 group-hover:-translate-y-0.5">🎛</div>
+          <div className="min-w-0">
+            <p className="font-display text-base font-semibold">Make a mix</p>
+            <p className="mt-0.5 text-xs text-ink/55">
+              Cut parts from any of your dances and stitch them into one routine. Perfect for
+              medleys and performances that jump between songs.
+            </p>
+          </div>
+          <span className="ml-auto shrink-0 text-ink/30 transition group-hover:text-ink/60">→</span>
+        </button>
+      )}
 
       {/* How it works — the actual flow, in order, so a first-timer knows what they're in for */}
       <section className="mb-10">
@@ -297,6 +322,75 @@ export function Library() {
           </div>
         ))}
       </div>
+
+      {/* Your mixes — saved medleys stitched from parts of several dances */}
+      {mixes.length > 0 && (
+        <>
+          <div className="mb-4 mt-12 flex items-baseline justify-between">
+            <h2 className="font-display text-sm font-medium uppercase tracking-[0.18em] text-ink/45">Your mixes</h2>
+            <span className="text-xs text-ink/35">{mixes.length} saved</span>
+          </div>
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {mixes.map((m, i) => (
+              <div
+                key={m.id}
+                style={{ animationDelay: `${i * 60}ms` }}
+                className="group flex animate-fade-up flex-col justify-between rounded-2.5xl border border-line bg-panel/80 p-3 shadow-soft transition-all duration-200 hover:-translate-y-1 hover:border-ink/25"
+              >
+                <button onClick={() => void openMix(m.id)} className="text-left">
+                  <div className="mb-4 flex h-32 items-center justify-center overflow-hidden rounded-xl bg-ink/10">
+                    <span className="text-5xl transition-transform duration-300 group-hover:scale-110">🎛</span>
+                  </div>
+                  <p className="px-1 font-display text-base font-semibold leading-snug">{m.name}</p>
+                </button>
+                <p className="mt-1 px-1 text-xs text-ink/50">
+                  {m.clips.length} {m.clips.length === 1 ? 'part' : 'parts'} · {Math.round(mixDuration(m.clips))}s
+                </p>
+                <div className="mt-4 flex items-center justify-between gap-2 px-1 pb-1">
+                  {confirmDeleteMix === m.id ? (
+                    <div className="flex w-full items-center justify-between gap-2">
+                      <span className="text-xs text-ink/60">Delete this mix?</span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => { setConfirmDeleteMix(null); void removeMix(m.id) }}
+                          className="rounded-lg bg-bad px-3 py-1.5 text-xs font-semibold text-cream transition hover:brightness-110 active:scale-95"
+                        >
+                          Delete
+                        </button>
+                        <button onClick={() => setConfirmDeleteMix(null)} className="rounded-lg border border-line px-3 py-1.5 text-xs text-ink/60 transition hover:text-ink">
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <button onClick={() => void openMix(m.id)} className="rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-cream shadow-soft transition hover:brightness-105 active:scale-95">
+                        ▶ Practice
+                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => void openMixEditor(m)}
+                          className="shrink-0 rounded-xl border border-line px-2.5 py-2 text-xs font-medium text-ink/45 transition hover:border-ink/40 hover:text-ink"
+                          title="Edit this mix"
+                        >
+                          ✎
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteMix(m.id)}
+                          className="shrink-0 rounded-xl border border-line px-2.5 py-2 text-xs font-medium text-ink/45 transition hover:border-bad/50 hover:text-bad"
+                          title="Delete this mix"
+                        >
+                          🗑
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <footer className="mt-14 text-center text-xs text-ink/30">
         Your camera and your videos never leave your device. Only an anonymous count of visits and
