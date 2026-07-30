@@ -156,12 +156,6 @@ export function Library() {
             </li>
           ))}
         </ol>
-        <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-ink/45">
-          <span className="text-ink/35">Also built in:</span>
-          {['Half speed with the pitch kept', 'Mirror mode', 'Loop any segment', 'Skip the talking parts', 'Voice control', 'Your progress saves'].map((f) => (
-            <span key={f} className="rounded-full border border-line bg-ink/[0.04] px-3 py-1">{f}</span>
-          ))}
-        </div>
       </section>
 
       {/* Extraction progress */}
