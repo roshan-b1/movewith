@@ -14,10 +14,12 @@ the source dances; deleting a source dance leaves its blob referenced only by th
    dance with a video.
 2. **Editor** (`ui/screens/MixEditor.tsx`):
    - Pick any uploaded dance as the current source (switch freely, any order).
-   - Scrub it and set an in/out with the `Scrubber` (its trim range is the "cut this part"
-     selection); "▶ Play part" loops just the selection so you hear exactly what you're grabbing.
-   - **Drag** the selection onto the mix track, or tap **＋ Add**. Reorder blocks by dragging
-     or the ‹ › nudges; remove with ✕.
+   - Scrub it and set an in/out with the `Scrubber`; "▶ Play part" loops just the selection.
+   - That cut shows up as a **block** (the same object the mix is made of). **Grab the cut
+     block and drag it straight down** onto the mix track, or tap the block's **＋** to append.
+   - On the track, every part is a block on a fixed time scale (`PPS` px per second, so width =
+     duration). **Drag a block's middle to reorder** (or the ‹ › nudges); **drag either end to
+     trim** its in/out, DaVinci-style, clamped to the source's real length; **✕** removes it.
    - **▶ Preview** plays the whole medley across sources.
    - Name it and **Save** → straight into practicing it.
 3. **Practice** (`ui/screens/MixPractice.tsx`): the parts are the segments. Drill one on a

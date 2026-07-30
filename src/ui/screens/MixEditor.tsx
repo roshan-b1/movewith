@@ -3,10 +3,11 @@
 //   pick a dance  →  scrub + set an in/out on it  →  drop that part onto the mix track
 //   → repeat with any dance, in any order  →  preview the whole thing  →  save.
 //
-// The mix track is always on screen so you watch it fill up. Parts are added by dragging
-// the selection down onto the track (or a tap "＋ Add" for reliability), reordered by
-// dragging blocks (or ‹ › nudges), and previewed with the source-swapping MixPlayback
-// engine. No camera/scoring here — a mix is a practice routine.
+// The mix track is always on screen so you watch it fill up. You cut a part on the source
+// (in/out on the scrubber); that cut shows up as a block you grab and drag straight down
+// into the mix — the cut block and the mix blocks are the SAME object, so it reads as one
+// continuous "cut → drop" gesture. Reorder by dragging blocks (or ‹ › nudges), preview with
+// the source-swapping MixPlayback engine. No camera/scoring here — a mix is a practice routine.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSession } from '../../state/sessionStore'
@@ -38,12 +39,34 @@ function fmt(t: number): string {
 const btn =
   'rounded-xl border border-line bg-ink/[0.06] px-3 py-2 text-sm font-medium text-ink/80 transition hover:text-ink active:scale-95'
 
+// Fixed time scale for the mix track: every second of a part is this many pixels wide, so a
+// block's width IS its duration (DaVinci-style) and edge-trimming maps px→seconds linearly.
+const PPS = 7
+
+// One shared look for a "part" block, used for the cut and for every block in the mix so they
+// read as the same object. `partStyle` tints it by its source dance's color.
+const partCls = 'relative flex shrink-0 select-none flex-col justify-between overflow-hidden rounded-lg text-left'
+function partStyle(color: string): { background: string; border: string } {
+  return { background: `${color}22`, border: `1px solid ${color}` }
+}
+
 interface DragState {
   kind: 'add' | 'reorder'
   clipId?: string
   x: number
   y: number
   label: string
+  color: string
+}
+
+/** An in-progress edge-trim of a block already in the mix (drag its left/right end). */
+interface TrimState {
+  clipId: string
+  edge: 'start' | 'end'
+  startX: number
+  origStart: number
+  origEnd: number
+  sourceDur: number
 }
 
 export function MixEditor() {
@@ -80,10 +103,20 @@ export function MixEditor() {
   // ---- drag and drop ----
   const [drag, setDrag] = useState<DragState | null>(null)
   const [dropIndex, setDropIndex] = useState<number | null>(null)
+  const [trim, setTrim] = useState<TrimState | null>(null)
   const trackRowRef = useRef<HTMLDivElement>(null)
 
   const total = mixDuration(clips)
   const sourceOrder = useMemo(() => [...new Set(clips.map((c) => c.sourceTrackId))], [clips])
+  // Each uploaded dance keeps ONE color everywhere (cut block + mix blocks), keyed off a stable
+  // order of all sources so it never shifts as the mix changes.
+  const colorOrder = useMemo(() => sources.map((t) => t.id), [sources])
+  const sourceDurById = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const t of sources) m.set(t.id, t.source.durationSec)
+    return m
+  }, [sources])
+  const cutColor = sourceTrack ? colorFor(sourceTrack.id, colorOrder) : SOURCE_COLORS[0]!
 
   // Load the picked source's video URL and reset the selection to the whole clip.
   useEffect(() => {
@@ -215,11 +248,48 @@ export function MixEditor() {
   function startAddDrag(e: React.PointerEvent) {
     const clip = makeSelectionClip()
     if (!clip) return
-    setDrag({ kind: 'add', x: e.clientX, y: e.clientY, label: `${sourceTrack?.name ?? 'Part'} · ${fmt(selEnd - selStart)}` })
+    setDrag({ kind: 'add', x: e.clientX, y: e.clientY, label: `${sourceTrack?.name ?? 'Part'} · ${fmt(selEnd - selStart)}`, color: cutColor })
   }
   function startReorderDrag(e: React.PointerEvent, c: MixClip) {
-    setDrag({ kind: 'reorder', clipId: c.id, x: e.clientX, y: e.clientY, label: c.sourceName })
+    setDrag({ kind: 'reorder', clipId: c.id, x: e.clientX, y: e.clientY, label: `${c.sourceName} · ${fmt(c.endSec - c.startSec)}`, color: colorFor(c.sourceTrackId, colorOrder) })
   }
+
+  // ---- edge-trim a block already in the mix (drag its ends, DaVinci-style) ----
+  function startTrim(e: React.PointerEvent, c: MixClip, edge: 'start' | 'end') {
+    e.stopPropagation() // don't let the block's reorder-drag also fire
+    setTrim({
+      clipId: c.id,
+      edge,
+      startX: e.clientX,
+      origStart: c.startSec,
+      origEnd: c.endSec,
+      sourceDur: sourceDurById.get(c.sourceTrackId) ?? c.endSec,
+    })
+  }
+
+  useEffect(() => {
+    if (!trim) return
+    const MIN = 0.3 // a part can't be trimmed shorter than this
+    const move = (e: PointerEvent) => {
+      const deltaSec = (e.clientX - trim.startX) / PPS
+      setClips((cs) =>
+        cs.map((c) => {
+          if (c.id !== trim.clipId) return c
+          if (trim.edge === 'start') {
+            return { ...c, startSec: Math.max(0, Math.min(trim.origStart + deltaSec, trim.origEnd - MIN)) }
+          }
+          return { ...c, endSec: Math.min(trim.sourceDur, Math.max(trim.origEnd + deltaSec, trim.origStart + MIN)) }
+        }),
+      )
+    }
+    const up = () => setTrim(null)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    return () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+  }, [trim])
 
   function deleteClip(id: string) {
     setClips((cs) => removeClip(cs, id))
@@ -243,7 +313,8 @@ export function MixEditor() {
     previewCtrlRef.current = ctrl
     ctrl.onTick((t) => {
       const head = previewHeadRef.current
-      if (head) head.style.left = `${total > 0 ? Math.min(100, (t / total) * 100) : 0}%`
+      // Same fixed scale as the blocks (+8px for the track's padding) so the head tracks them.
+      if (head) head.style.left = `${8 + t * PPS}px`
     })
     // When the medley reaches its end (or otherwise stops), tear the controller down too,
     // not just the visible flag, so it doesn't linger holding a detached <video>.
@@ -340,19 +411,37 @@ export function MixEditor() {
           />
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button onClick={toggleSourcePlay} className={btn}>{sourcePlaying ? '⏸ Pause' : '▶ Play part'}</button>
-          <span className="text-xs text-ink/50">Selected part: {fmt(Math.max(0, selEnd - selStart))}</span>
-          <div className="flex-1" />
-          {/* Drag this onto the mix track, or tap Add. */}
-          <button
-            onPointerDown={startAddDrag}
-            className="cursor-grab touch-none rounded-xl border border-brand2/50 bg-brand2/15 px-4 py-2 text-sm font-bold text-ink transition hover:bg-brand2/25 active:scale-95"
-            title="Drag me onto the mix track below, or tap ＋ Add"
-          >
-            ⇩ Drag part to mix
-          </button>
-          <button onClick={addSelectionToEnd} className={btn}>＋ Add</button>
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <button onClick={toggleSourcePlay} className={btn + ' mb-1'}>{sourcePlaying ? '⏸ Pause' : '▶ Play part'}</button>
+          <div className="min-w-0">
+            <p className="mb-1.5 text-xs font-medium text-ink/45">Your cut · grab it and drag down into the mix</p>
+            {sourceTrack && selEnd - selStart >= 0.3 ? (
+              <div
+                onPointerDown={startAddDrag}
+                className={partCls + ' w-44 cursor-grab touch-none p-2 shadow-soft transition hover:brightness-110 active:scale-95'}
+                style={partStyle(cutColor)}
+                title="Drag me down into the mix"
+              >
+                <div className="truncate text-[11px] font-bold leading-tight text-ink">{sourceTrack.name}</div>
+                <div className="text-[10px] tabular-nums text-ink/55">{fmt(selEnd - selStart)}</div>
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="text-[10px] font-medium text-ink/45">⇩ drag to mix</span>
+                  <button
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={addSelectionToEnd}
+                    className="rounded px-1.5 text-sm leading-none text-ink/50 transition hover:text-ink"
+                    title="Add to the end of the mix"
+                  >
+                    ＋
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex w-44 items-center justify-center rounded-lg border border-dashed border-line/60 p-3 text-center text-[11px] text-ink/40">
+                Trim a part above first
+              </div>
+            )}
+          </div>
         </div>
       </section>
 
@@ -383,33 +472,47 @@ export function MixEditor() {
         >
           {clips.length === 0 && (
             <div className="flex w-full items-center justify-center text-sm text-ink/40">
-              Drag parts here to build your mix
+              Drag your cut here to build the mix
             </div>
           )}
           {clips.map((c, i) => {
-            const color = colorFor(c.sourceTrackId, sourceOrder)
+            const color = colorFor(c.sourceTrackId, colorOrder)
             const dur = c.endSec - c.startSec
-            const width = total > 0 ? Math.max(64, Math.round((dur / total) * 520)) : 120
+            const width = Math.max(72, Math.round(dur * PPS))
+            const trimming = trim?.clipId === c.id
             return (
               <div key={c.id} className="flex items-stretch">
                 {dropIndex === i && <div className="mx-0.5 w-1 rounded bg-brand" />}
                 <div
                   data-clip-index={i}
-                  className="group relative flex shrink-0 touch-none select-none flex-col justify-between rounded-lg p-2 text-left"
-                  style={{ width, background: `${color}22`, border: `1px solid ${color}` }}
+                  onPointerDown={(e) => startReorderDrag(e, c)}
+                  className={partCls + ` group cursor-grab touch-none py-2 ${trimming ? 'ring-2 ring-ink/40' : ''}`}
+                  style={{ width, ...partStyle(color) }}
+                  title="Drag the middle to reorder · drag an end to trim"
                 >
+                  {/* Trim grips — drag an end to change this part's in/out (DaVinci-style). */}
                   <div
-                    onPointerDown={(e) => startReorderDrag(e, c)}
-                    className="cursor-grab text-[11px] font-bold leading-tight text-ink"
-                    title="Drag to reorder"
+                    onPointerDown={(e) => startTrim(e, c, 'start')}
+                    className="absolute inset-y-0 left-0 z-10 w-2.5 cursor-ew-resize touch-none transition hover:bg-white/10"
+                    title="Trim the start"
                   >
-                    {c.sourceName}
+                    <div className="absolute inset-y-1.5 left-1 w-0.5 rounded bg-ink/45" />
                   </div>
-                  <div className="text-[10px] tabular-nums text-ink/55">{fmt(dur)}</div>
-                  <div className="mt-1 flex items-center gap-1">
-                    <button onClick={() => nudge(c.id, -1)} disabled={i === 0} className="rounded px-1 text-xs text-ink/50 hover:text-ink disabled:opacity-30" title="Move left">‹</button>
-                    <button onClick={() => nudge(c.id, 1)} disabled={i === clips.length - 1} className="rounded px-1 text-xs text-ink/50 hover:text-ink disabled:opacity-30" title="Move right">›</button>
-                    <button onClick={() => deleteClip(c.id)} className="ml-auto rounded px-1 text-xs text-ink/40 hover:text-bad" title="Remove">✕</button>
+                  <div
+                    onPointerDown={(e) => startTrim(e, c, 'end')}
+                    className="absolute inset-y-0 right-0 z-10 w-2.5 cursor-ew-resize touch-none transition hover:bg-white/10"
+                    title="Trim the end"
+                  >
+                    <div className="absolute inset-y-1.5 right-1 w-0.5 rounded bg-ink/45" />
+                  </div>
+                  <div className="px-3">
+                    <div className="truncate text-[11px] font-bold leading-tight text-ink">{c.sourceName}</div>
+                    <div className="text-[10px] tabular-nums text-ink/55">{fmt(dur)}</div>
+                  </div>
+                  <div className="mt-1 flex items-center gap-1 px-2">
+                    <button onPointerDown={(e) => e.stopPropagation()} onClick={() => nudge(c.id, -1)} disabled={i === 0} className="rounded px-1 text-xs text-ink/50 hover:text-ink disabled:opacity-30" title="Move left">‹</button>
+                    <button onPointerDown={(e) => e.stopPropagation()} onClick={() => nudge(c.id, 1)} disabled={i === clips.length - 1} className="rounded px-1 text-xs text-ink/50 hover:text-ink disabled:opacity-30" title="Move right">›</button>
+                    <button onPointerDown={(e) => e.stopPropagation()} onClick={() => deleteClip(c.id)} className="ml-auto rounded px-1 text-xs text-ink/40 hover:text-bad" title="Remove">✕</button>
                   </div>
                 </div>
               </div>
@@ -419,14 +522,14 @@ export function MixEditor() {
           {/* Preview playhead across the whole track. */}
           {previewing && <div ref={previewHeadRef} className="pointer-events-none absolute inset-y-1 w-0.5 bg-ink" style={{ left: '0%' }} />}
         </div>
-        <p className="mt-2 text-xs text-ink/40">Drag a block to reorder, or use ‹ › · ✕ removes a part. Preview plays the whole medley.</p>
+        <p className="mt-2 text-xs text-ink/40">Drag a block's middle to reorder, its ends to trim. ‹ › nudge · ✕ removes. Preview plays the whole medley.</p>
       </section>
 
-      {/* Floating drag ghost. */}
+      {/* Floating drag ghost — a mini version of the block, in its source's color. */}
       {drag && (
         <div
-          className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-1/2 rounded-lg border border-brand bg-panel px-3 py-1.5 text-xs font-bold text-ink shadow-glow"
-          style={{ left: drag.x, top: drag.y }}
+          className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-1/2 rounded-lg px-3 py-1.5 text-xs font-bold text-ink shadow-glow"
+          style={{ left: drag.x, top: drag.y, background: `${drag.color}33`, border: `1px solid ${drag.color}` }}
         >
           {drag.label}
         </div>
