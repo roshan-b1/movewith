@@ -49,6 +49,8 @@ const LIMB_ADVICE: Record<Limb, string> = {
 const PHASE_LABEL: Record<'start' | 'middle' | 'end', string> = {
   start: 'beginning', middle: 'middle', end: 'ending',
 }
+/** Compact phase tag for the per-segment recap chips. */
+const PHASE_SHORT: Record<'start' | 'middle' | 'end', string> = { start: 'start', middle: 'mid', end: 'end' }
 /** Convert an average per-limb error (degrees) into a 0-100 bar for the results panel. */
 function limbQuality(errorDeg: number) {
   return Math.max(0, Math.min(100, Math.round(100 - errorDeg * 2.2)))
@@ -910,7 +912,8 @@ export function Practice() {
           const sc = refAngles.length >= 2 && part.angles.length >= 3
             ? scoreSectionDetailed(refAngles, part.angles, cfgRef.current)
             : null
-          return { index: part.index, score: sc?.score ?? 0, worstLimb: sc?.worstLimb ?? null }
+          const worstPhase = sc && sc.phases.length ? sc.phases.reduce((a, b) => (b.score < a.score ? b : a)).phase : null
+          return { index: part.index, score: sc?.score ?? 0, worstLimb: sc?.worstLimb ?? null, worstPhase }
         }))
       })
       const sawAnyone = takes.some((t) => (t?.length ?? 0) >= 3)
@@ -2023,9 +2026,17 @@ export function Practice() {
                 }
                 const worst = [...tally.entries()].sort((a, b) => b[1] - a[1])[0]
                 if (!worst) return null
+                // Where it went off most for that limb (start / middle / end), for a "when" hint.
+                const phaseTally = new Map<'start' | 'middle' | 'end', number>()
+                for (const s of runSummary.segments) {
+                  if (s.grade !== 'nailed' && s.worstLimb === worst[0] && s.worstPhase) {
+                    phaseTally.set(s.worstPhase, (phaseTally.get(s.worstPhase) ?? 0) + 1)
+                  }
+                }
+                const domPhase = [...phaseTally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
                 return (
                   <p className="mt-3 rounded-xl border border-warn/40 bg-warn/[0.08] px-3 py-2 text-sm text-ink/80">
-                    Biggest fix: your <b className="text-ink">{LIMB_LABEL[worst[0]].toLowerCase()}</b> drifted the most. {LIMB_ADVICE[worst[0]]}.
+                    Biggest fix: your <b className="text-ink">{LIMB_LABEL[worst[0]].toLowerCase()}</b> drifted the most{domPhase ? `, mostly at the ${PHASE_LABEL[domPhase]} of the move` : ''}. {LIMB_ADVICE[worst[0]]}.
                   </p>
                 )
               })()}
@@ -2036,7 +2047,7 @@ export function Practice() {
                   const note = s.grade === 'nailed'
                     ? 'Nailed it'
                     : s.worstLimb
-                      ? `${LIMB_LABEL[s.worstLimb]} off`
+                      ? `${LIMB_LABEL[s.worstLimb]}${s.worstPhase ? ` · ${PHASE_SHORT[s.worstPhase]}` : ''}`
                       : s.grade === 'close' ? 'Close' : 'Needs work'
                   return (
                     <div key={s.index} className="flex items-center gap-2 rounded-xl border border-line bg-ink/[0.03] px-3 py-2">
@@ -2045,7 +2056,7 @@ export function Practice() {
                         <div className="h-full rounded-full" style={{ width: `${Math.round(s.score)}%`, background: tint }} />
                       </div>
                       <span className="w-9 shrink-0 text-right text-xs tabular-nums text-ink/60">{Math.round(s.score)}%</span>
-                      <span className="w-[76px] shrink-0 text-right text-[11px] font-semibold" style={{ color: tint }}>{note}</span>
+                      <span className="w-[92px] shrink-0 text-right text-[11px] font-semibold" style={{ color: tint }}>{note}</span>
                     </div>
                   )
                 })}

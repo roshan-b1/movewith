@@ -170,6 +170,8 @@ export interface RatedSegment {
   index: number
   score: number
   worstLimb: Limb | null
+  /** Which third of the segment slipped the most (start / middle / end), when known. */
+  worstPhase: SectionPhase | null
   grade: SegmentGrade
 }
 
@@ -186,8 +188,16 @@ export interface RunSummary {
  * Roll up a full run-through (each segment scored on its own) into an overall grade plus
  * the per-segment buckets. Empty input → a zeroed summary (nothing was rated).
  */
-export function summarizeRun(items: { index: number; score: number; worstLimb: Limb | null }[]): RunSummary {
-  const segments: RatedSegment[] = items.map((it) => ({ ...it, grade: gradeScore(it.score) }))
+export function summarizeRun(
+  items: { index: number; score: number; worstLimb: Limb | null; worstPhase?: SectionPhase | null }[],
+): RunSummary {
+  const segments: RatedSegment[] = items.map((it) => ({
+    index: it.index,
+    score: it.score,
+    worstLimb: it.worstLimb,
+    worstPhase: it.worstPhase ?? null,
+    grade: gradeScore(it.score),
+  }))
   const overall = segments.length ? segments.reduce((s, x) => s + x.score, 0) / segments.length : 0
   return {
     segments,
