@@ -11,6 +11,12 @@ export interface LoopRegion {
 
 export type PlaybackTick = (timeSec: number) => void
 
+// A small margin so a sub-range loop whose out-point sits at (or just past) the file's real
+// decoded duration still wraps. The stored duration can read a hair longer than the actual
+// decode, which would otherwise leave the last segment's out-point unreachable: the file
+// 'ends' before the loop-back seek can fire, and the segment freezes on the final frame.
+const END_EPS = 0.06
+
 export class PlaybackController {
   private video: HTMLVideoElement | null = null
   private mode: 'video' | 'virtual' = 'virtual'
@@ -42,6 +48,15 @@ export class PlaybackController {
     this.stopRaf()
   }
   private onVideoEnded = () => {
+    // Looping a sub-range whose out-point is at/after the file's real duration: the file can
+    // 'end' before the frame loop seeks back. Treat it as the loop wrap — jump to the loop
+    // start and let the tick fire (the practice screen's onTick sees the jump-back and runs
+    // its usual break/repeat, then resumes play). Without this the segment freezes on the end.
+    if (this.loop && !this.nativeLooping) {
+      this.seek(this.loop.startSec)
+      this.emit()
+      return
+    }
     if (!this.loop) { this.setPlayingState(false); this.stopRaf(); this.emit() }
   }
 
@@ -207,7 +222,13 @@ export class PlaybackController {
     }
     if (this.loop && !this.nativeLooping) {
       const t = this.getTime()
-      if (!seeking && (t >= this.loop.endSec || t < this.loop.startSec)) this.seek(this.loop.startSec)
+      const v = this.mode === 'video' ? this.video : null
+      // Wrap at the out-point, or at the file's real end (ended / within END_EPS of the real
+      // decoded duration) when the out-point sits at/beyond it — so the last segment loops
+      // instead of freezing on the final frame.
+      const hitEnd =
+        t >= this.loop.endSec || (v !== null && (v.ended || (v.duration > 0 && t >= v.duration - END_EPS)))
+      if (!seeking && (hitEnd || t < this.loop.startSec)) this.seek(this.loop.startSec)
     } else if (!this.loop && !seeking && this.getTime() >= this.durationSec) {
       this.pause()
       this.seek(this.durationSec)
