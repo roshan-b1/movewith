@@ -216,6 +216,7 @@ export function MixEditor() {
     const v = sourceVideoRef.current
     if (!v) return
     if (v.paused) {
+      stopPreview() // don't overlap the mix preview's audio
       setSrcLoop(null) // Play runs the whole trimmed range
       if (v.currentTime < trimStart || v.currentTime >= trimEnd) v.currentTime = trimStart
       void v.play().then(() => setSourcePlaying(true)).catch(() => {})
@@ -253,12 +254,16 @@ export function MixEditor() {
   }
   function changeTrim(s: number, e: number) {
     if (!sourceId) return
-    updateCut(sourceId, (c) => ({ trimStart: s, trimEnd: e, bounds: c.bounds.filter((b) => b > s + 0.05 && b < e - 0.05) }))
+    // Keep every cut in state even if the trim narrows past it: buildMovesFromBounds already
+    // ignores out-of-range bounds for display, so widening the trim brings them back instead of
+    // destroying them mid-drag (onRangeChange fires continuously while a handle is dragged).
+    updateCut(sourceId, (c) => ({ ...c, trimStart: s, trimEnd: e }))
   }
 
   function previewSegment(m: Move) {
     const v = sourceVideoRef.current
     if (!v) return
+    stopPreview() // don't leave a mix preview playing under the source
     setSrcLoop({ start: m.startSec, end: m.endSec })
     v.currentTime = m.startSec
     setSourceTime(m.startSec)
@@ -312,18 +317,22 @@ export function MixEditor() {
             return moveClip(cs, from, to)
           })
         }
-      } else if (drag.kind === 'add' && !movedRef.current && drag.previewMove) {
-        // A tap on a cut block (never dragged out): preview-loop that part.
+      } else if (drag.kind === 'add' && drag.previewMove) {
+        // Pressed a cut block but didn't drop it on the mix (a tap, or a drag that missed the
+        // track): preview-loop that part rather than doing nothing (touch taps often jitter).
         previewSegment(drag.previewMove)
       }
       setDrag(null)
       setDropIndex(null)
     }
+    const cancel = () => { setDrag(null); setDropIndex(null) }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
     return () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', cancel)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drag, clips])
@@ -366,9 +375,11 @@ export function MixEditor() {
     const up = () => setBoundDrag(null)
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
     return () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boundDrag, moves, trimStart, trimEnd, sourceId])
@@ -409,15 +420,20 @@ export function MixEditor() {
     const up = () => setTrim(null)
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
     return () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
     }
   }, [trim])
 
   // ---- preview (plays the whole mix across sources) ----
   async function startPreview() {
     if (clips.length === 0) return
+    // Stop the source cutter so its (now unmuted) loop doesn't play under the mix preview.
+    sourceVideoRef.current?.pause()
+    setSourcePlaying(false)
     for (const id of sourceOrder) await ensureSourceUrl(id)
     const v = previewVideoRef.current
     if (!v) return
