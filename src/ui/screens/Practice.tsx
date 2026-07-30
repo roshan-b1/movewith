@@ -2179,7 +2179,7 @@ export function Practice() {
               className="absolute bottom-6 right-6 z-40 flex items-center rounded-xl bg-good px-6 py-3 text-base font-bold text-[#13260a] shadow-glow transition hover:brightness-105 active:scale-95"
             >
               ✓ Got it
-              <kbd className="ml-2 rounded bg-black/15 px-1.5 py-0.5 text-[10px] font-bold leading-none">↵</kbd>
+              <kbd className="ml-2 rounded bg-black/15 px-1.5 py-0.5 text-[10px] font-bold leading-none">Enter</kbd>
             </button>
           </>
         )}
@@ -2333,7 +2333,7 @@ export function Practice() {
             <button onClick={repeatMove} className="rounded-xl border border-line bg-ink/[0.06] px-5 py-2.5 text-sm font-semibold text-ink/80 transition hover:text-ink active:scale-95">↻ Repeat</button>
             <button onClick={completeSegment} title="Got it (Enter)" className="flex items-center rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95">
               ✓ Got it
-              <kbd className="ml-2 rounded bg-black/15 px-1.5 py-0.5 text-[10px] font-bold leading-none">↵</kbd>
+              <kbd className="ml-2 rounded bg-black/15 px-1.5 py-0.5 text-[10px] font-bold leading-none">Enter</kbd>
             </button>
             <button onClick={() => gotoMove(nextOpen(moveIdx, 1))} className={btn + ' !px-3'}>skip ›</button>
           </div>
@@ -2408,7 +2408,7 @@ export function Practice() {
               className="flex items-center rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
             >
               ✓ Got it{!playbackOnly && ' · test me →'}
-              <kbd className="ml-2 rounded bg-black/15 px-1.5 py-0.5 text-[10px] font-bold leading-none">↵</kbd>
+              <kbd className="ml-2 rounded bg-black/15 px-1.5 py-0.5 text-[10px] font-bold leading-none">Enter</kbd>
             </button>
           </div>
           <div className="flex min-h-[24px] items-center justify-center text-sm">
