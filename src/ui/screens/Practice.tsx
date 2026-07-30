@@ -252,7 +252,7 @@ export function Practice() {
   const instructorVideoRef = useRef<HTMLVideoElement | null>(null)
   const instructorCanvasRef = useRef<HTMLCanvasElement>(null)
   const instructorOverlayRef = useRef<HTMLCanvasElement>(null)
-  const stageRef = useRef<HTMLElement>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
   /** Latest keyboard-shortcut handler (reassigned each render so it always sees fresh state). */
   const keyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {})
   const avatarCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -684,9 +684,11 @@ export function Practice() {
   // Exiting native fullscreen (Esc / system gesture) drops our overlay too.
   useEffect(() => {
     const onChange = () => {
-      const d = document as Document & { webkitFullscreenElement?: Element | null }
+      const d = document as Document & { webkitFullscreenElement?: Element | null; webkitFullscreenEnabled?: boolean }
       const active = !!(document.fullscreenElement || d.webkitFullscreenElement)
-      if (!active && document.fullscreenEnabled) setIsFs(false)
+      // Accept the webkit-prefixed capability too, else prefixed-only WebKit (older Safari/
+      // iPadOS) never clears isFs on Esc and the overlay stays stuck covering the page.
+      if (!active && (document.fullscreenEnabled || d.webkitFullscreenEnabled)) setIsFs(false)
     }
     document.addEventListener('fullscreenchange', onChange)
     document.addEventListener('webkitfullscreenchange', onChange)
@@ -698,7 +700,7 @@ export function Practice() {
   // Leaving a fullscreen-capable mode (into the rater, a test, replay…) drops fullscreen so the
   // fixed overlay never covers a screen it wasn't built for.
   useEffect(() => {
-    const capable = phase === 'go' && (segMode === 'watch' || segMode === 'runthrough')
+    const capable = phase === 'go'
     if (isFs && !capable) {
       setIsFs(false)
       const d = document as Document & { webkitExitFullscreen?: () => void; webkitFullscreenElement?: Element | null }
@@ -1378,7 +1380,7 @@ export function Practice() {
    *  has no element fullscreen. Exiting native fullscreen syncs back via the fullscreenchange
    *  listener above. */
   function toggleFullscreen() {
-    const el = stageRef.current
+    const el = rootRef.current
     if (!el) return
     const elx = el as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> | void }
     const doc = document as Document & { webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => void }
@@ -1470,9 +1472,6 @@ export function Practice() {
   }
 
   const btn = 'rounded-xl border border-line bg-ink/[0.06] px-3.5 py-2.5 text-sm font-medium text-ink/70 transition hover:border-ink/25 hover:text-ink active:scale-95'
-  // Translucent dark controls for the fullscreen overlay (sit over the video).
-  const fsBtn = 'rounded-xl border border-white/20 bg-black/50 px-3 py-2 text-sm font-semibold text-cream/90 backdrop-blur transition hover:border-brand/60 active:scale-95'
-  const fsBtnOn = 'rounded-xl border border-brand/60 bg-brand/25 px-3 py-2 text-sm font-semibold text-cream backdrop-blur transition active:scale-95'
   const chip = (on: boolean) =>
     `rounded-xl px-4 py-2 text-sm font-semibold transition ${on ? 'bg-brand text-cream shadow-glow' : 'border border-line bg-ink/[0.06] text-ink/70 hover:text-ink'}`
 
@@ -1546,21 +1545,26 @@ export function Practice() {
   }
 
   const inGo = phase === 'go'
-  // Fullscreen only makes sense in the learn modes (drilling a segment or the run-through).
-  const canFs = inGo && !camMain && (segMode === 'watch' || segMode === 'runthrough')
+  // Fullscreen the whole practice screen — available in every mode once you're dancing.
+  const canFs = inGo
 
   // Reassigned each render so the once-bound keydown listener always runs fresh handlers.
   keyHandlerRef.current = (e: KeyboardEvent) => {
     if (phaseRef.current !== 'go') return
+    // Let real browser chords through (Ctrl/Cmd+R reload, Cmd+M, etc.) — our shortcuts are all
+    // bare keys, so a modifier means the user wants the browser's binding, not ours.
+    if (e.ctrlKey || e.metaKey || e.altKey) return
     const active = document.activeElement as HTMLElement | null
     if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return
     // F11 → our stage fullscreen (override the browser's own window fullscreen).
     if (e.key === 'F11') { if (canFs || isFs) { e.preventDefault(); toggleFullscreen() } return }
     // Space/Enter shouldn't double-fire when a button/link already has focus.
     const onControl = !!active && (active.tagName === 'BUTTON' || active.tagName === 'A')
+    // Space toggles play in every practice sub-mode and is swallowed so the page never scrolls
+    // (togglePlay itself no-ops during a run-through / test / replay).
+    if (e.code === 'Space' && !onControl) { e.preventDefault(); togglePlay(); return }
     const mode = segModeRef.current
     if (mode === 'watch') {
-      if (e.code === 'Space' && !onControl) { e.preventDefault(); togglePlay(); return }
       if (e.key === 'Enter' && !onControl) { e.preventDefault(); completeSegment(); return }
       if (e.key === 'r' || e.key === 'R') { e.preventDefault(); repeatMove(); return }
       if (e.key === 'ArrowRight') { e.preventDefault(); gotoMove(nextOpen(moveIdxRef.current, 1)); return }
@@ -1574,7 +1578,14 @@ export function Practice() {
 
   // ---------- PRACTICE ----------
   return (
-    <div className="mx-auto flex min-h-screen max-w-4xl flex-col gap-3 p-4 sm:p-6">
+    <div
+      ref={rootRef}
+      className={
+        isFs
+          ? 'fixed inset-0 z-[60] flex h-[100dvh] w-screen flex-col gap-2 overflow-y-auto bg-paper p-2 sm:p-3'
+          : 'mx-auto flex min-h-screen max-w-4xl flex-col gap-3 p-4 sm:p-6'
+      }
+    >
       <header className="flex items-center justify-between gap-3">
         {rating ? (
           <button onClick={exitRating} className={btn + ' !py-2'}>‹ Exit</button>
@@ -1599,15 +1610,37 @@ export function Practice() {
                         : `Segment ${moveIdx + 1} of ${moves.length}`}
           </p>
         </div>
-        <button onClick={rating ? exitRating : back} className={btn + ' !py-2'}>Exit</button>
+        <div className="flex items-center gap-2">
+          {canFs && (
+            <button
+              onClick={toggleFullscreen}
+              title={isFs ? 'Exit fullscreen (F11)' : 'Fullscreen (F11)'}
+              className={btn + ' !p-2'}
+            >
+              <FullscreenIcon exit={isFs} />
+            </button>
+          )}
+          <button onClick={rating ? exitRating : back} className={btn + ' !py-2'}>Exit</button>
+        </div>
       </header>
+
+      {/* Fullscreen: a big Got it, bottom-right, for the drill / run-through modes (Enter too). */}
+      {isFs && (segMode === 'watch' || segMode === 'runthrough') && (
+        <button
+          onClick={() => (segModeRef.current === 'runthrough' ? finishPracticeRun(true) : completeSegment())}
+          title="Got it (Enter)"
+          className="fixed bottom-5 right-5 z-[70] flex items-center rounded-xl bg-good px-6 py-3 text-base font-bold text-[#13260a] shadow-glow transition hover:brightness-105 active:scale-95"
+        >
+          ✓ Got it
+          <kbd className="ml-2 rounded bg-black/15 px-1.5 py-0.5 text-[10px] font-bold leading-none">↵</kbd>
+        </button>
+      )}
 
       {/* Instructor (flips when Mirror is on) */}
       <section
-        ref={stageRef}
         className={
           isFs
-            ? 'fixed inset-0 z-[60] flex items-center justify-center overflow-hidden bg-black'
+            ? 'relative min-h-0 flex-1 overflow-hidden rounded-xl border border-line bg-black shadow-soft'
             : 'relative aspect-video overflow-hidden rounded-2.5xl border border-line bg-black/60 shadow-soft'
         }
       >
@@ -1632,16 +1665,6 @@ export function Practice() {
           <span className="absolute left-3 top-3 z-20 rounded-2xl bg-brand px-3 py-2 font-display text-sm font-bold text-cream shadow-glow">
             ▶ Segment {previewIdx + 1}
           </span>
-        )}
-        {/* Enter fullscreen — the corner-brackets icon, video-player style (top-right). */}
-        {canFs && !isFs && videoUrl && (
-          <button
-            onClick={toggleFullscreen}
-            title="Fullscreen (F11)"
-            className="absolute right-3 top-3 z-20 rounded-2xl border border-line bg-black/50 p-2 text-cream/90 backdrop-blur transition hover:border-brand/60 active:scale-95"
-          >
-            <FullscreenIcon />
-          </button>
         )}
         {/* Generated routines: toggle the synthesized backing beat. */}
         {!videoUrl && !camMain && (
@@ -2150,54 +2173,6 @@ export function Practice() {
               </div>
             </div>
           </div>
-        )}
-        {/* Fullscreen overlay controls: transport on the left, ✓ Got it + exit bottom-right. */}
-        {isFs && (
-          <>
-            <button
-              onClick={toggleFullscreen}
-              title="Exit fullscreen (F11)"
-              className="absolute right-4 top-4 z-40 rounded-xl border border-white/20 bg-black/50 p-2 text-cream/90 backdrop-blur transition hover:border-brand/60 active:scale-95"
-            >
-              <FullscreenIcon exit />
-            </button>
-            <div className="absolute inset-x-0 bottom-0 z-40 flex items-end justify-between gap-3 bg-gradient-to-t from-black/75 via-black/30 to-transparent p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-              <div className="flex flex-wrap items-center gap-2">
-                {segMode === 'watch' && (
-                  <button onClick={togglePlay} title="Play/Pause (Space)" className={fsBtn}>{playing ? '⏸' : '▶'}</button>
-                )}
-                <div className="flex items-center gap-1 rounded-xl border border-white/15 bg-black/40 p-1">
-                  {RATE_STEPS.slice().reverse().map((r) => (
-                    <button key={r} onClick={() => changeRate(r)} className={`rounded-lg px-2.5 py-1.5 text-sm font-medium tabular-nums transition ${rate === r ? 'bg-brand text-cream' : 'text-cream/60 hover:text-cream'}`}>
-                      {r === 1 ? '1×' : `${r}×`}
-                    </button>
-                  ))}
-                </div>
-                <button onClick={() => setMirror((m) => !m)} title="Mirror (M)" className={mirror ? fsBtnOn : fsBtn}>🪞</button>
-                {segMode === 'watch' && (
-                  <>
-                    <button onClick={() => gotoMove(nextOpen(moveIdx, -1))} title="Previous (←)" className={fsBtn}>‹</button>
-                    <button onClick={repeatMove} title="Repeat (R)" className={fsBtn}>↻</button>
-                    <button onClick={() => gotoMove(nextOpen(moveIdx, 1))} title="Skip (→)" className={fsBtn}>›</button>
-                  </>
-                )}
-                {segMode === 'runthrough' && (
-                  <>
-                    <button onClick={startPracticeRun} className={fsBtn}>↻ Restart</button>
-                    <button onClick={() => finishPracticeRun(false)} className={fsBtn}>✕ Stop</button>
-                  </>
-                )}
-              </div>
-              <button
-                onClick={() => (segModeRef.current === 'runthrough' ? finishPracticeRun(true) : completeSegment())}
-                title="Got it (Enter)"
-                className="flex items-center rounded-xl bg-good px-6 py-3 text-base font-bold text-[#13260a] shadow-glow transition hover:brightness-105 active:scale-95"
-              >
-                ✓ Got it
-                <kbd className="ml-2 rounded bg-black/15 px-1.5 py-0.5 text-[10px] font-bold leading-none">↵</kbd>
-              </button>
-            </div>
-          </>
         )}
         {countdown > 0 && (
           <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/45 backdrop-blur-[1px]">
