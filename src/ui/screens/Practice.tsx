@@ -193,7 +193,6 @@ export function Practice() {
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([])
   const [activeCam, setActiveCam] = useState<string | null>(null)
   const [voiceOn, setVoiceOn] = useState(false)
-  const voiceSupported = useMemo(() => VoiceController.isSupported(), [])
   const [avatarStatus, setAvatarStatus] = useState<AvatarStatus>('loading')
   // Synthesized backing beat for generated routines (no video = no audio track of its own).
   const [musicOn, setMusicOn] = useState(true)
@@ -2163,9 +2162,8 @@ export function Practice() {
             )}
             <button onClick={playAll} className={fullRun ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn} title="Practice the whole song start to finish">▶ Full song</button>
             <button onClick={editSegments} className={btn} title="Go back and edit the segments">✎ Edit segments</button>
-            {voiceSupported && (
-              <button onClick={() => setVoiceOn((v) => !v)} className={voiceOn ? btn + ' !border-brand/60 !bg-brand/20 !text-ink' : btn}>🎙</button>
-            )}
+            {/* Voice control (🎙) is hidden for now — the machinery below stays so it can
+                be re-enabled later once it's reliable over music. */}
           </div>
 
           {/* Got it / repeat — pure practice */}
