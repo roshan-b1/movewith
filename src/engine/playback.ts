@@ -24,6 +24,9 @@ export class PlaybackController {
   private durationSec: number
   private rate = 1
   private playing = false
+  /** Whether we WANT the video playing right now. Lets a rejected play() retry itself without
+   *  fighting a deliberate pause (a break between loops), and drives the stall watchdog. */
+  private wantPlay = false
   private loop: LoopRegion | null = null
   private _mirror = false
   private rafId = 0
@@ -167,13 +170,22 @@ export class PlaybackController {
 
   play() {
     if (this.mode === 'video' && this.video) {
-      // Let the native 'play'/'pause' events own the state. A rejected promise can be a
-      // transient interrupt (e.g. a seek) OR a real autoplay block — only treat it as
-      // paused if the element is actually still paused a tick later.
+      this.wantPlay = true
       const v = this.video
+      // A play() issued right after a seek (segment switch, loop wrap, break resume) is often
+      // rejected by the browser as "interrupted by a seek/new load" — on real videos with sparse
+      // keyframes the seek is still settling. That used to leave the segment frozen while the UI
+      // showed "playing". Retry when the element can next play (and after a short fallback), but
+      // only while we still want to play — so a deliberate pause (a break) is never overridden.
+      const attempt = () => { if (this.wantPlay && v.paused) v.play().catch(() => {}) }
       const p = v.play()
       if (p && typeof p.catch === 'function') {
-        p.catch(() => { if (v.paused) this.setPlayingState(false) })
+        p.catch(() => {
+          if (!(this.wantPlay && v.paused)) return
+          v.addEventListener('seeked', attempt, { once: true })
+          v.addEventListener('canplay', attempt, { once: true })
+          window.setTimeout(attempt, 300)
+        })
       }
       return
     }
@@ -184,6 +196,7 @@ export class PlaybackController {
   }
 
   pause() {
+    this.wantPlay = false
     if (this.mode === 'video' && this.video) {
       this.video.pause() // 'pause' event flips state + stops the rAF loop
       return
@@ -198,6 +211,13 @@ export class PlaybackController {
 
   private frame = (ts: number) => {
     if (!this.playing) return
+
+    // Stall watchdog: we intend to play and the element isn't mid-seek, yet it sits paused —
+    // nudge it back to life so a segment never stays frozen. wantPlay is cleared synchronously
+    // by pause(), so this never overrides a deliberate break-pause.
+    if (this.mode === 'video' && this.video && this.wantPlay && this.video.paused && !this.video.seeking) {
+      void this.video.play().catch(() => {})
+    }
 
     if (this.mode === 'virtual') {
       if (this.lastTs === 0) this.lastTs = ts
