@@ -49,8 +49,13 @@ const LIMB_ADVICE: Record<Limb, string> = {
 const PHASE_LABEL: Record<'start' | 'middle' | 'end', string> = {
   start: 'beginning', middle: 'middle', end: 'ending',
 }
-/** Compact phase tag for the per-segment recap chips. */
-const PHASE_SHORT: Record<'start' | 'middle' | 'end', string> = { start: 'start', middle: 'mid', end: 'end' }
+/** Roughly where in a segment each phase sits, for a report timestamp. */
+const PHASE_CENTER: Record<'start' | 'middle' | 'end', number> = { start: 0.17, middle: 0.5, end: 0.83 }
+/** m:ss clock label. */
+function fmtClock(t: number): string {
+  const s = Math.max(0, t)
+  return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
+}
 /** Convert an average per-limb error (degrees) into a 0-100 bar for the results panel. */
 function limbQuality(errorDeg: number) {
   return Math.max(0, Math.min(100, Math.round(100 - errorDeg * 2.2)))
@@ -222,6 +227,8 @@ export function Practice() {
   const [isFs, setIsFs] = useState(false)
   /** Side-by-side replay scrub position (0..1 across the segment), for a free-seek slider. */
   const [replayProgress, setReplayProgress] = useState(0)
+  /** The detailed run report (timestamps + what went wrong) is open. */
+  const [showReport, setShowReport] = useState(false)
   const [avatarStatus, setAvatarStatus] = useState<AvatarStatus>('loading')
   // Synthesized backing beat for generated routines (no video = no audio track of its own).
   const [musicOn, setMusicOn] = useState(true)
@@ -920,7 +927,13 @@ export function Practice() {
             ? scoreSectionDetailed(refAngles, part.angles, cfgRef.current)
             : null
           const worstPhase = sc && sc.phases.length ? sc.phases.reduce((a, b) => (b.score < a.score ? b : a)).phase : null
-          return { index: part.index, score: sc?.score ?? 0, worstLimb: sc?.worstLimb ?? null, worstPhase }
+          const offLimbs = sc
+            ? (Object.entries(sc.perLimb) as [Limb, { errorDeg: number; ok: boolean }][])
+                .filter(([, r]) => !r.ok)
+                .sort((a, b) => b[1].errorDeg - a[1].errorDeg)
+                .map(([limb, r]) => ({ limb, errorDeg: r.errorDeg }))
+            : []
+          return { index: part.index, score: sc?.score ?? 0, worstLimb: sc?.worstLimb ?? null, worstPhase, offLimbs, startSec: m.startSec, endSec: m.endSec }
         }))
       })
       const sawAnyone = takes.some((t) => (t?.length ?? 0) >= 3)
@@ -2125,12 +2138,7 @@ export function Practice() {
               <div className="mt-4 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
                 {runSummary.segments.map((s) => {
                   const tint = s.grade === 'nailed' ? '#a3e635' : s.grade === 'close' ? '#facc15' : '#ff5470'
-                  // Say what was off, not just a grade: the worst limb is already computed.
-                  const note = s.grade === 'nailed'
-                    ? 'Nailed it'
-                    : s.worstLimb
-                      ? `${LIMB_LABEL[s.worstLimb]}${s.worstPhase ? ` · ${PHASE_SHORT[s.worstPhase]}` : ''}`
-                      : s.grade === 'close' ? 'Close' : 'Needs work'
+                  const gradeWord = s.grade === 'nailed' ? 'Nailed' : s.grade === 'close' ? 'Close' : 'Off'
                   return (
                     <div key={s.index} className="flex items-center gap-2 rounded-xl border border-line bg-ink/[0.03] px-3 py-2">
                       <span className="w-16 shrink-0 text-xs font-semibold text-ink/70">Segment {s.index + 1}</span>
@@ -2138,14 +2146,17 @@ export function Practice() {
                         <div className="h-full rounded-full" style={{ width: `${Math.round(s.score)}%`, background: tint }} />
                       </div>
                       <span className="w-9 shrink-0 text-right text-xs tabular-nums text-ink/60">{Math.round(s.score)}%</span>
-                      <span className="w-[92px] shrink-0 text-right text-[11px] font-semibold" style={{ color: tint }}>{note}</span>
+                      <span className="w-11 shrink-0 text-right text-[11px] font-semibold" style={{ color: tint }}>{gradeWord}</span>
                     </div>
                   )
                 })}
               </div>
               <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                <button onClick={() => setShowReport(true)} className={btn + ' !border-brand2/50'} title="Timestamps and exactly what to fix">
+                  📋 View report
+                </button>
                 {takeUrl && (
-                  <button onClick={startReplay} className={btn + ' !border-brand2/50'} title="Watch your run next to the instructor">
+                  <button onClick={startReplay} className={btn} title="Watch your run next to the instructor">
                     🎬 Watch side by side
                   </button>
                 )}
@@ -2158,6 +2169,51 @@ export function Practice() {
                   ✓ Done
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+        {/* DETAILED REPORT — per part, with a timestamp and exactly what went wrong. */}
+        {showReport && runSummary && (
+          <div onClick={() => setShowReport(false)} className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+            <div onClick={(e) => e.stopPropagation()} className="flex max-h-[85vh] w-full max-w-md flex-col rounded-2.5xl border border-line bg-panel p-5 shadow-soft">
+              <div className="flex items-center justify-between">
+                <p className="font-display text-lg font-bold">📋 Your report</p>
+                <button onClick={() => setShowReport(false)} className="text-sm text-ink/50 transition hover:text-ink">✕</button>
+              </div>
+              <p className="mt-1 text-xs text-ink/50">Where each part slipped, with a timestamp and what to fix.</p>
+              <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                {runSummary.segments.map((s) => {
+                  const ts = fmtClock(s.startSec + (s.worstPhase ? PHASE_CENTER[s.worstPhase] : 0.5) * (s.endSec - s.startSec))
+                  const off = s.offLimbs.slice(0, 3)
+                  return (
+                    <div key={s.index} className="rounded-xl border border-line bg-ink/[0.03] p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-semibold text-ink/80">Segment {s.index + 1}</span>
+                        <span className="text-[11px] tabular-nums text-ink/45">{fmtClock(s.startSec)}–{fmtClock(s.endSec)} · {Math.round(s.score)}%</span>
+                      </div>
+                      {s.grade === 'nailed' || off.length === 0 ? (
+                        <p className="mt-1 text-xs text-good/80">Nailed it 🔥 nothing to fix here.</p>
+                      ) : (
+                        <>
+                          <p className="mt-1 text-xs text-ink/70">
+                            Around <b className="text-ink">{ts}</b>{s.worstPhase ? ` (the ${PHASE_LABEL[s.worstPhase]} of the move)` : ''}:
+                          </p>
+                          <ul className="mt-1 space-y-0.5">
+                            {off.map((o) => (
+                              <li key={o.limb} className="text-xs text-ink/70">
+                                · <b className="text-ink/85">{LIMB_LABEL[o.limb]}</b> off{o.errorDeg > 0 ? ` ~${Math.round(o.errorDeg)}°` : ''}: {LIMB_ADVICE[o.limb]}.
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              <button onClick={() => setShowReport(false)} className="mt-3 rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95">
+                Got it
+              </button>
             </div>
           </div>
         )}

@@ -170,8 +170,13 @@ export interface RatedSegment {
   index: number
   score: number
   worstLimb: Limb | null
+  /** Every limb that was off, worst first, with how far — powers the detailed report. */
+  offLimbs: { limb: Limb; errorDeg: number }[]
   /** Which third of the segment slipped the most (start / middle / end), when known. */
   worstPhase: SectionPhase | null
+  /** Segment time range (seconds), so the report can show a timestamp for the mistake. */
+  startSec: number
+  endSec: number
   grade: SegmentGrade
 }
 
@@ -189,13 +194,24 @@ export interface RunSummary {
  * the per-segment buckets. Empty input → a zeroed summary (nothing was rated).
  */
 export function summarizeRun(
-  items: { index: number; score: number; worstLimb: Limb | null; worstPhase?: SectionPhase | null }[],
+  items: {
+    index: number
+    score: number
+    worstLimb: Limb | null
+    offLimbs?: { limb: Limb; errorDeg: number }[]
+    worstPhase?: SectionPhase | null
+    startSec?: number
+    endSec?: number
+  }[],
 ): RunSummary {
   const segments: RatedSegment[] = items.map((it) => ({
     index: it.index,
     score: it.score,
     worstLimb: it.worstLimb,
+    offLimbs: it.offLimbs ?? (it.worstLimb ? [{ limb: it.worstLimb, errorDeg: 0 }] : []),
     worstPhase: it.worstPhase ?? null,
+    startSec: it.startSec ?? 0,
+    endSec: it.endSec ?? 0,
     grade: gradeScore(it.score),
   }))
   const overall = segments.length ? segments.reduce((s, x) => s + x.score, 0) / segments.length : 0
