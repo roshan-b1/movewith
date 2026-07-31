@@ -86,7 +86,10 @@ export function Library() {
         <h1 className="font-display text-5xl font-bold leading-[0.95] tracking-tightish sm:text-7xl">
           Learn any dance,
           <br />
-          <span className="text-gradient italic">move by move.</span>
+          {/* inline-block + a taller line-height and a little right room so the gradient's
+              clip box covers the italic slant (the trailing ".") and the "y" descender, which
+              the tight leading-[0.95] would otherwise cut off. */}
+          <span className="text-gradient inline-block pb-[0.08em] pr-[0.22em] italic leading-[1.12]">move by move.</span>
         </h1>
         <p className="mt-5 max-w-xl text-lg leading-relaxed text-ink/60">
           Upload a dance tutorial and cut it into short moves. Each one loops on its own, slowed
