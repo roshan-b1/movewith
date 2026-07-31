@@ -17,6 +17,13 @@ export type PlaybackTick = (timeSec: number) => void
 // 'ends' before the loop-back seek can fire, and the segment freezes on the final frame.
 const END_EPS = 0.06
 
+// How far BEFORE a loop's in-point the playhead must be to count as "outside the loop" and get
+// snapped back. Seeking to an in-point can undershoot by a few ms on a real video (the decoder
+// lands on the nearest frame, not the exact time). Without this tolerance a bare `t < startSec`
+// re-seeks to the start every frame and never advances — the segment freezes on its first
+// frame, especially at slow speed where the clock lingers just under the boundary.
+const SEEK_TOL = 0.2
+
 export class PlaybackController {
   private video: HTMLVideoElement | null = null
   private mode: 'video' | 'virtual' = 'virtual'
@@ -248,7 +255,9 @@ export class PlaybackController {
       // instead of freezing on the final frame.
       const hitEnd =
         t >= this.loop.endSec || (v !== null && (v.ended || (v.duration > 0 && t >= v.duration - END_EPS)))
-      if (!seeking && (hitEnd || t < this.loop.startSec)) this.seek(this.loop.startSec)
+      // Only snap back when MEANINGFULLY before the in-point (SEEK_TOL), so a few-ms seek
+      // undershoot doesn't re-seek every frame and freeze the segment on its first frame.
+      if (!seeking && (hitEnd || t < this.loop.startSec - SEEK_TOL)) this.seek(this.loop.startSec)
     } else if (!this.loop && !seeking && this.getTime() >= this.durationSec) {
       this.pause()
       this.seek(this.durationSec)
