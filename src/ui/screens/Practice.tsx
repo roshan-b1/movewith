@@ -1884,7 +1884,7 @@ export function Practice() {
             <span className="absolute bottom-3 left-3 z-20 rounded-xl bg-black/60 px-2.5 py-1 text-xs font-semibold text-cream/85 backdrop-blur">
               Instructor
             </span>
-            <span className="absolute bottom-3 right-3 z-20 rounded-xl bg-brand2/90 px-2.5 py-1 text-xs font-bold text-[#06222a]">
+            <span className="absolute right-3 top-3 z-20 rounded-xl bg-brand2/90 px-2.5 py-1 text-xs font-bold text-[#06222a]">
               You
             </span>
           </>
@@ -2301,9 +2301,9 @@ export function Practice() {
           </div>
         )}
         {/* Enter fullscreen — YouTube-style corner-brackets icon on the video, revealed on hover
-            (the header button + the button below cover non-hover / touch). Drill modes only, so
-            it never sits over the camera. */}
-        {!isFs && (segMode === 'watch' || segMode === 'runthrough') && (
+            (the header button + the button below cover non-hover / touch). Shown on the video /
+            side-by-side screens; the panel modes use the header button. */}
+        {!isFs && (segMode === 'watch' || segMode === 'runthrough' || replaying || segMode === 'test') && (
           <button
             onClick={(e) => { e.currentTarget.blur(); toggleFullscreen() }}
             title="Fullscreen (F11)"
