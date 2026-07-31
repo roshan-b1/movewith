@@ -220,6 +220,8 @@ export function Practice() {
   const [voiceOn, setVoiceOn] = useState(false)
   // Practice fullscreen: the stage fills the screen and controls overlay it (Got it bottom-right).
   const [isFs, setIsFs] = useState(false)
+  /** Side-by-side replay scrub position (0..1 across the segment), for a free-seek slider. */
+  const [replayProgress, setReplayProgress] = useState(0)
   const [avatarStatus, setAvatarStatus] = useState<AvatarStatus>('loading')
   // Synthesized backing beat for generated routines (no video = no audio track of its own).
   const [musicOn, setMusicOn] = useState(true)
@@ -254,7 +256,7 @@ export function Practice() {
   const instructorVideoRef = useRef<HTMLVideoElement | null>(null)
   const instructorCanvasRef = useRef<HTMLCanvasElement>(null)
   const instructorOverlayRef = useRef<HTMLCanvasElement>(null)
-  const stageRef = useRef<HTMLElement>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
   /** Latest keyboard-shortcut handler (reassigned each render so it always sees fresh state). */
   const keyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {})
   const avatarCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -530,8 +532,13 @@ export function Practice() {
         } else if (action === 'finishRecordRun') {
           finishRecordRunRef.current()
         } else if (action === 'hold') {
-          // Side-by-side replay ran the segment once; hold at the end for ▶ Replay.
-          // (The take video simply ends on its own.)
+          // Side-by-side replay ran the segment once: park BOTH at the end so the instructor
+          // doesn't loop on while your take holds. The scrub bar lets you go back and replay.
+          pb.pause()
+          pb.seek(loopEndRef.current)
+          takeVideoRef.current?.pause()
+          setPlaying(false)
+          setReplayProgress(1)
         } else if (action === 'repsDone') {
           repCounterRef.current = 0
           flashToast('Done · ✓ Got it for the next one, or ↻ repeat')
@@ -702,7 +709,7 @@ export function Practice() {
   // Leaving a fullscreen-capable mode (into the rater, a test, replay…) drops fullscreen so the
   // fixed overlay never covers a screen it wasn't built for.
   useEffect(() => {
-    const capable = phase === 'go' && (segMode === 'watch' || segMode === 'runthrough')
+    const capable = phase === 'go'
     if (isFs && !capable) {
       setIsFs(false)
       const d = document as Document & { webkitExitFullscreen?: () => void; webkitFullscreenElement?: Element | null }
@@ -1007,6 +1014,49 @@ export function Practice() {
     const dest = replayReturn === 'summary' ? 'summary' : 'results'
     setSegMode(dest); segModeRef.current = dest
   }
+  /** Scrub the side-by-side replay: seek BOTH the instructor and your take to the same point in
+   *  the segment. Free seeking, no pause / "Replay" gate. */
+  function scrubReplay(frac: number) {
+    const f = Math.max(0, Math.min(1, frac))
+    const tv = takeVideoRef.current
+    const pb = playbackRef.current
+    if (tv && tv.duration > 0) tv.currentTime = f * tv.duration
+    if (pb) {
+      const s = loopStartRef.current, e = loopEndRef.current
+      const t = s + f * (e - s)
+      pb.seek(t)
+      prevTimeRef.current = t
+      awaitingSeekRef.current = t
+      lastSeekMsRef.current = performance.now()
+    }
+    setReplayProgress(f)
+  }
+  /** Play/pause both sides together. */
+  function toggleReplayPlay() {
+    const tv = takeVideoRef.current
+    const pb = playbackRef.current
+    if (!tv || !pb) return
+    if (tv.paused) {
+      // Both ended? Start over from the top; otherwise resume where we are.
+      if (tv.currentTime >= tv.duration - 0.05) scrubReplay(0)
+      void tv.play().catch(() => {})
+      pb.play(); setPlaying(true)
+    } else {
+      tv.pause(); pb.pause(); setPlaying(false)
+    }
+  }
+  // While side-by-side replay is on, drive the scrub position off the take video.
+  useEffect(() => {
+    if (!replaying) return
+    let raf = 0
+    const tick = () => {
+      const tv = takeVideoRef.current
+      if (tv && tv.duration > 0) setReplayProgress(Math.min(1, tv.currentTime / tv.duration))
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [replaying])
 
   function clearCountdown() {
     if (countdownTimerRef.current) { window.clearTimeout(countdownTimerRef.current); countdownTimerRef.current = null }
@@ -1383,7 +1433,7 @@ export function Practice() {
    *  has no element fullscreen. Exiting native fullscreen syncs back via the fullscreenchange
    *  listener above. */
   function toggleFullscreen() {
-    const el = stageRef.current
+    const el = rootRef.current
     if (!el) return
     const elx = el as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> | void }
     const doc = document as Document & { webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => void }
@@ -1548,9 +1598,12 @@ export function Practice() {
   }
 
   const inGo = phase === 'go'
-  // Fullscreen the video for the learn modes (drilling a segment / the run-through), where the
-  // experience is "fill the screen, hide the controls, just ✓ Got it".
-  const canFs = inGo && (segMode === 'watch' || segMode === 'runthrough')
+  // Fullscreen the whole practice screen — every mode (drilling, run-through, Test my skills,
+  // side-by-side replay) can go fullscreen and keep its own controls.
+  const canFs = inGo
+  // The drill / run-through fullscreen is the clean one: fill the screen, hide the chrome, just
+  // ✓ Got it. The camera / replay modes keep their controls (scrub, replay, restart…).
+  const drillFs = isFs && (segMode === 'watch' || segMode === 'runthrough')
 
   // Reassigned each render so the once-bound keydown listener always runs fresh handlers.
   keyHandlerRef.current = (e: KeyboardEvent) => {
@@ -1587,7 +1640,14 @@ export function Practice() {
 
   // ---------- PRACTICE ----------
   return (
-    <div className="mx-auto flex min-h-screen max-w-4xl flex-col gap-3 p-4 sm:p-6">
+    <div
+      ref={rootRef}
+      className={
+        isFs
+          ? 'fixed inset-0 z-[60] flex h-[100dvh] w-screen flex-col gap-2 overflow-y-auto bg-paper p-2 sm:p-3'
+          : 'mx-auto flex min-h-screen max-w-4xl flex-col gap-3 p-4 sm:p-6'
+      }
+    >
       <header className="flex items-center justify-between gap-3">
         {rating ? (
           <button onClick={exitRating} className={btn + ' !py-2'}>‹ Exit</button>
@@ -1612,15 +1672,37 @@ export function Practice() {
                         : `Segment ${moveIdx + 1} of ${moves.length}`}
           </p>
         </div>
-        <button onClick={rating ? exitRating : back} className={btn + ' !py-2'}>Exit</button>
+        <div className="flex items-center gap-2">
+          {canFs && (
+            <button
+              onClick={(e) => { e.currentTarget.blur(); toggleFullscreen() }}
+              title={isFs ? 'Exit fullscreen (F11)' : 'Fullscreen (F11)'}
+              className={btn + ' !p-2'}
+            >
+              <FullscreenIcon exit={isFs} />
+            </button>
+          )}
+          <button onClick={rating ? exitRating : back} className={btn + ' !py-2'}>Exit</button>
+        </div>
       </header>
+
+      {/* Fullscreen drill / run-through: the video fills the screen with just ✓ Got it bottom-right. */}
+      {drillFs && (
+        <button
+          onClick={() => (segModeRef.current === 'runthrough' ? finishPracticeRun(true) : completeSegment())}
+          title="Got it (Enter)"
+          className="fixed bottom-6 right-6 z-[70] flex items-center rounded-xl bg-good px-6 py-3 text-base font-bold text-[#13260a] shadow-glow transition hover:brightness-105 active:scale-95"
+        >
+          ✓ Got it
+          <kbd className="ml-2 rounded bg-black/15 px-1.5 py-0.5 text-[10px] font-bold leading-none">Enter</kbd>
+        </button>
+      )}
 
       {/* Instructor (flips when Mirror is on) */}
       <section
-        ref={stageRef}
         className={
           isFs
-            ? 'group fixed inset-0 z-[60] overflow-hidden bg-black'
+            ? 'group relative min-h-0 flex-1 overflow-hidden rounded-xl border border-line bg-black shadow-soft'
             : 'group relative aspect-video overflow-hidden rounded-2.5xl border border-line bg-black/60 shadow-soft'
         }
       >
@@ -2162,9 +2244,10 @@ export function Practice() {
             </div>
           </div>
         )}
-        {/* Enter fullscreen — YouTube-style corner-brackets icon, bottom-right of the video,
-            revealed on hover (the button below the video covers non-hover / touch). */}
-        {canFs && !isFs && (
+        {/* Enter fullscreen — YouTube-style corner-brackets icon on the video, revealed on hover
+            (the header button + the button below cover non-hover / touch). Drill modes only, so
+            it never sits over the camera. */}
+        {!isFs && (segMode === 'watch' || segMode === 'runthrough') && (
           <button
             onClick={(e) => { e.currentTarget.blur(); toggleFullscreen() }}
             title="Fullscreen (F11)"
@@ -2172,27 +2255,6 @@ export function Practice() {
           >
             <FullscreenIcon />
           </button>
-        )}
-        {/* In fullscreen: the video fills the screen with NOTHING but ✓ Got it (bottom-right,
-            click or press Enter) and a small exit. */}
-        {isFs && (
-          <>
-            <button
-              onClick={(e) => { e.currentTarget.blur(); toggleFullscreen() }}
-              title="Exit fullscreen (F11)"
-              className="absolute right-4 top-4 z-40 rounded-xl border border-white/15 bg-black/40 p-2 text-cream/80 backdrop-blur transition hover:text-cream active:scale-95"
-            >
-              <FullscreenIcon exit />
-            </button>
-            <button
-              onClick={() => (segModeRef.current === 'runthrough' ? finishPracticeRun(true) : completeSegment())}
-              title="Got it (Enter)"
-              className="absolute bottom-6 right-6 z-40 flex items-center rounded-xl bg-good px-6 py-3 text-base font-bold text-[#13260a] shadow-glow transition hover:brightness-105 active:scale-95"
-            >
-              ✓ Got it
-              <kbd className="ml-2 rounded bg-black/15 px-1.5 py-0.5 text-[10px] font-bold leading-none">Enter</kbd>
-            </button>
-          </>
         )}
         {countdown > 0 && (
           <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/45 backdrop-blur-[1px]">
@@ -2202,8 +2264,12 @@ export function Practice() {
         )}
       </section>
 
+      {/* Everything below the video. Hidden in the clean drill / run-through fullscreen (which
+          shows only the video + the floating ✓ Got it); shown for the camera / replay modes. */}
+      {!drillFs && (
+        <>
       {/* A visible fullscreen button below the video, for anyone who doesn't hover the corner. */}
-      {canFs && !isFs && (
+      {!isFs && (segMode === 'watch' || segMode === 'runthrough') && (
         <div className="flex justify-center">
           <button onClick={(e) => { e.currentTarget.blur(); toggleFullscreen() }} className={btn + ' flex items-center gap-2 !py-1.5'}>
             <FullscreenIcon /> Fullscreen
@@ -2211,8 +2277,10 @@ export function Practice() {
         </div>
       )}
 
-      {/* Bounds: a trimmer to pick the part. Practice: the segment timeline (already trimmed). */}
+      {/* Bounds: a trimmer to pick the part. Practice: the segment timeline (already trimmed).
+          Hidden during side-by-side replay, which has its own scrub bar that moves both videos. */}
       {inGo ? (
+        replaying ? null : (
         <SegmentBar
           trimStart={trimStart}
           trimEnd={trimEnd}
@@ -2224,6 +2292,7 @@ export function Practice() {
           onTap={reviewSegment}
           onSeek={seekTo}
         />
+        )
       ) : (
         <Scrubber duration={duration} currentTime={0} rangeStart={trimStart} rangeEnd={trimEnd} sections={ticks} onSeek={seekTo} onRangeChange={onTrimChange} playheadRef={scrubPlayheadRef} />
       )}
@@ -2449,31 +2518,46 @@ export function Practice() {
           </div>
         </>
       ) : segMode === 'replay' ? (
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          <button onClick={replayBoth} className="rounded-xl bg-brand px-6 py-2.5 text-sm font-semibold text-cream shadow-glow transition hover:brightness-105 active:scale-95">
-            ▶ Replay
-          </button>
-          {replayReturn === 'practice' ? (
-            <>
-              <button onClick={startRecordRun} className={btn}>↻ Record another</button>
-              <button
-                onClick={doneRecordReplay}
-                className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
-              >
-                ✓ Back to practice
-              </button>
-            </>
-          ) : (
-            <>
-              <button onClick={backToResults} className={btn}>‹ Back to feedback</button>
-              <button
-                onClick={exitRating}
-                className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
-              >
-                ✓ Done
-              </button>
-            </>
-          )}
+        <div className="mx-auto flex w-full max-w-lg flex-col items-stretch gap-2">
+          {/* Free scrub: drag anywhere to seek BOTH sides together, no pausing / Replay gate. */}
+          <div className="flex items-center gap-3">
+            <button onClick={toggleReplayPlay} title="Play/Pause" className="shrink-0 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-cream shadow-glow transition hover:brightness-105 active:scale-95">
+              {playing ? '⏸' : '▶'}
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={1000}
+              value={Math.round(replayProgress * 1000)}
+              onChange={(e) => scrubReplay(Number(e.target.value) / 1000)}
+              className="h-1.5 flex-1 cursor-pointer accent-brand"
+              title="Scrub both sides"
+            />
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <button onClick={replayBoth} className={btn}>↺ From the top</button>
+            {replayReturn === 'practice' ? (
+              <>
+                <button onClick={startRecordRun} className={btn}>🎥 Record another</button>
+                <button
+                  onClick={doneRecordReplay}
+                  className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
+                >
+                  ✓ Back to practice
+                </button>
+              </>
+            ) : (
+              <>
+                <button onClick={backToResults} className={btn}>‹ Back to feedback</button>
+                <button
+                  onClick={exitRating}
+                  className="rounded-xl bg-good px-5 py-2.5 text-sm font-bold text-[#13260a] shadow-soft transition hover:brightness-105 active:scale-95"
+                >
+                  ✓ Done
+                </button>
+              </>
+            )}
+          </div>
         </div>
       ) : (
         <div className="flex min-h-[24px] items-center justify-center text-sm">
@@ -2489,6 +2573,8 @@ export function Practice() {
             {cameras.map((c, i) => <option key={c.deviceId || i} value={c.deviceId}>{c.label || `Camera ${i + 1}`}</option>)}
           </select>
         </div>
+      )}
+        </>
       )}
     </div>
   )
