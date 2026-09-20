@@ -25,8 +25,18 @@ deliberate "do later" so the current app stays focused.
   dataset — the honest blocker.
 - **Auto-detect dancing vs talking — BUILT.** Sustained stretches where the legs sit
   near-still read as explanation, not dancing (`core/reference/talking.ts`); auto-detect
-  pre-skips those segments with an undo toast. Validated: an all-dance real video gets zero
-  false positives. Future: a "jump straight to the dancing" control on first open.
+  DELETES those parts outright (with an undo toast), so they leave a visible hole you can
+  tap to put back. Validated: an all-dance real video gets zero false positives. Future: a
+  "jump straight to the dancing" control on first open.
+- **Deleting parts, and undo/redo — BUILT.** ✕ on a segment removes that stretch from the
+  routine for good rather than merging its time into a neighbour: the moves either side
+  stay separate, everything renumbers, and playback jumps the gap (including mid-routine
+  holes). Deleted time is kept as ranges in `PracticeSetup.cuts`, subtracted from the
+  segment list by `buildMovesFromBounds` — old saves that stored skipped segment INDICES
+  are migrated to ranges on open. The whole editor is undoable (`core/practice/history.ts`,
+  ⌘Z / ⇧⌘Z), one step per gesture rather than per drag frame. Double-clicking a divider
+  joins two segments without losing time. Future: drag a selection to cut an arbitrary
+  range, rather than only whole segments.
 - **Smarter segment drilling — MOSTLY BUILT.** Practice ends with a camera-free full
   run-through that LOOPS (with speed + mirror) until you tap Got it, which hands off to Test
   my skills. Combo practice loops 2 or 3 consecutive segments together so the join between
@@ -59,26 +69,6 @@ deliberate "do later" so the current app stays focused.
 
 ## Visual / onboarding
 
-- **Just-Dance-style rigged dancer — BUILT, currently HIDDEN.** The implementation exists but
-  is switched off (`ENABLE_3D_AVATAR = false` in Practice.tsx) because it isn't presentable
-  enough to show yet; the code, the .glb, and the solver all stay so it can be flipped back on
-  once it's improved. A matte-black MALE silhouette mannequin (Mixamo Y Bot) rendered with
-  three.js on a rim-lit stage with real shadows, driven per-frame from any routine's stored
-  landmarks
-  (`src/ui/avatar/InstructorAvatar.ts`). The solver is fully CUSTOM and direction-exact
-  (Kalidokit was removed — it clamps folds behind the body and hip yaw, so behind-the-head
-  moves and full turns came out wrong): every limb bone aligns to its landmark bone vector
-  via rest-pose-quaternion retargeting, the hips/torso follow a full orientation basis
-  from the hip+shoulder lines (handles 360° turns), plus a head/neck solver from face
-  landmarks, clavicle shrug, foot planting, and a ground clamp (feet never dip through the
-  stage; jumps still work). NOTES: person's left drives the mannequin's left (true view —
-  the person's left hand appears on the viewer's right, like watching a dancer face you).
-  The Y Bot GLB's usable T-pose clip is named "mixamo.com"; its "T-Pose" clip is an empty
-  stub, and stopping the mixer would reset the pose. Also done: camera-relative stage
-  travel for uploads (walks toward/away + across the stage, from image-space torso size
-  vs the routine median — `core/pose/travel.ts`, unit-tested) and relaxed finger
-  articulation. Follow-ups: avatar picker (multiple characters to choose from), live
-  per-finger tracking (needs a hand-landmark model, not pose), lighting themes.
 - **Onboarding tutorial video.** A short "watch this first" walkthrough that plays for
   first-time users before they start.
 

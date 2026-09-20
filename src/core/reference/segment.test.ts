@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { evenMoveBounds, autoMoveBounds, beatTimes } from './segment'
+import { evenMoveBounds, autoMoveBounds, beatTimes, buildMovesFromBounds, normalizeCuts, keptPieces } from './segment'
 import { makeTempo } from '../audio/beats'
 import type { ReferenceFrame } from './types'
 
@@ -145,5 +145,93 @@ describe('autoMoveBounds — beat alignment', () => {
     const bounds = autoMoveBounds([], 0, 24, 4, tempo)
     expect(bounds.length).toBeGreaterThanOrEqual(4)
     for (const b of bounds) expect(Math.round(b / 0.5) * 0.5).toBeCloseTo(b, 6)
+  })
+})
+
+describe('deleting parts of a routine', () => {
+  // Four 5-second segments across a 20s range.
+  const BOUNDS = [5, 10, 15]
+
+  it('keeps every segment when nothing is deleted', () => {
+    const m = buildMovesFromBounds(0, 20, BOUNDS)
+    expect(m.map((x) => [x.startSec, x.endSec])).toEqual([[0, 5], [5, 10], [10, 15], [15, 20]])
+  })
+
+  it('removes a deleted part outright instead of merging it into a neighbour', () => {
+    // Delete the SECOND segment (5-10). The point: 0-5 and 10-15 stay their own moves and
+    // nothing grows to cover 5-10 — that footage is simply gone.
+    const m = buildMovesFromBounds(0, 20, BOUNDS, [[5, 10]])
+    expect(m.map((x) => [x.startSec, x.endSec])).toEqual([[0, 5], [10, 15], [15, 20]])
+    expect(m.some((x) => x.startSec < 10 && x.endSec > 5)).toBe(false)
+  })
+
+  it('renumbers the moves after a deleted one', () => {
+    const m = buildMovesFromBounds(0, 20, BOUNDS, [[5, 10]])
+    expect(m.map((x) => x.index)).toEqual([0, 1, 2])
+    expect(m[1]!.startSec).toBe(10)
+  })
+
+  it('cuts a hole through the MIDDLE of a segment, leaving the two ends', () => {
+    const m = buildMovesFromBounds(0, 20, BOUNDS, [[6, 8]])
+    expect(m.map((x) => [x.startSec, x.endSec])).toEqual([[0, 5], [5, 6], [8, 10], [10, 15], [15, 20]])
+  })
+
+  it('handles several holes, including ones spanning a divider', () => {
+    const m = buildMovesFromBounds(0, 20, BOUNDS, [[2, 3], [8, 12]])
+    expect(m.map((x) => [x.startSec, x.endSec])).toEqual([[0, 2], [3, 5], [5, 8], [12, 15], [15, 20]])
+  })
+
+  it('returns nothing when the whole routine is deleted, rather than resurrecting it', () => {
+    expect(buildMovesFromBounds(0, 20, BOUNDS, [[0, 20]])).toEqual([])
+  })
+
+  it('still gives one whole-range move when there are no cuts and no deletes', () => {
+    const m = buildMovesFromBounds(0, 20, [])
+    expect(m.map((x) => [x.startSec, x.endSec])).toEqual([[0, 20]])
+  })
+
+  it('ignores deletes that fall outside the trimmed range', () => {
+    const m = buildMovesFromBounds(5, 15, [10], [[0, 2], [18, 20]])
+    expect(m.map((x) => [x.startSec, x.endSec])).toEqual([[5, 10], [10, 15]])
+  })
+})
+
+describe('normalizeCuts', () => {
+  it('merges overlapping and touching deletes into one hole', () => {
+    expect(normalizeCuts([[2, 6], [5, 9]], 0, 20)).toEqual([[2, 9]])
+    expect(normalizeCuts([[2, 5], [5, 8]], 0, 20)).toEqual([[2, 8]])
+  })
+
+  it('sorts them, clips to the range, and drops ones that fall outside it', () => {
+    // [12,14] is past the end of a 0-10 range, so it survives as nothing at all.
+    expect(normalizeCuts([[12, 14], [-5, 3]], 0, 10)).toEqual([[0, 3]])
+    expect(normalizeCuts([[8, 9], [2, 3]], 0, 10)).toEqual([[2, 3], [8, 9]])
+  })
+
+  it('drops slivers too short to be a real delete', () => {
+    expect(normalizeCuts([[4, 4.01]], 0, 20)).toEqual([])
+  })
+
+  it('accepts a range given backwards', () => {
+    expect(normalizeCuts([[9, 4]], 0, 20)).toEqual([[4, 9]])
+  })
+})
+
+describe('keptPieces', () => {
+  it('leaves a piece untouched when the delete misses it', () => {
+    expect(keptPieces(0, 5, [[10, 12]])).toEqual([[0, 5]])
+  })
+
+  it('trims from either end', () => {
+    expect(keptPieces(0, 10, [[0, 4]])).toEqual([[4, 10]])
+    expect(keptPieces(0, 10, [[7, 10]])).toEqual([[0, 7]])
+  })
+
+  it('splits into two when the delete is inside', () => {
+    expect(keptPieces(0, 10, [[4, 6]])).toEqual([[0, 4], [6, 10]])
+  })
+
+  it('returns nothing when the delete swallows it', () => {
+    expect(keptPieces(2, 4, [[0, 10]])).toEqual([])
   })
 })

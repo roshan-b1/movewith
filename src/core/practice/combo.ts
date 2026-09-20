@@ -16,14 +16,14 @@ export interface ComboSpan {
 }
 
 /**
- * The time range covering `count` consecutive segments starting at `startIndex`, skipping
- * over parts marked skip (you don't want an explanation in the middle of a combo). The
- * starting segment is always included; the span just stops early if the routine runs out.
- * `count <= 1` gives the single segment, which is the normal drilling case.
+ * The time range covering `count` consecutive segments starting at `startIndex`. Deleted
+ * stretches never reach here — they are already gone from the segment list — so a combo
+ * that straddles a hole covers the moves either side of it and playback jumps the gap.
+ * The starting segment is always included; the span just stops early if the routine runs
+ * out. `count <= 1` gives the single segment, which is the normal drilling case.
  */
 export function comboSpan(
   segments: readonly ComboSegment[],
-  skip: readonly number[],
   startIndex: number,
   count: number,
 ): ComboSpan | null {
@@ -34,9 +34,7 @@ export function comboSpan(
   const want = Math.max(1, count)
 
   for (let i = startAt + 1; i < segments.length && picked.length < want; i++) {
-    const seg = segments[i]!
-    if (skip.includes(seg.index)) continue
-    picked.push(seg)
+    picked.push(segments[i]!)
   }
   return {
     indices: picked.map((s) => s.index),

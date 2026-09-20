@@ -12,7 +12,8 @@ interface Props {
   moves: Move[]
   activeIndex: number
   completed: number[]
-  skip?: number[]
+  /** Stretches deleted out of the routine, drawn as holes in the bar. */
+  cuts?: Array<[number, number]>
   playheadRef?: React.Ref<HTMLDivElement>
   /** Tap a segment: jump to it. */
   onTap: (index: number) => void
@@ -20,7 +21,7 @@ interface Props {
   onSeek: (t: number) => void
 }
 
-export function SegmentBar({ trimStart, trimEnd, moves, activeIndex, completed, skip = [], playheadRef, onTap, onSeek }: Props) {
+export function SegmentBar({ trimStart, trimEnd, moves, activeIndex, completed, cuts = [], playheadRef, onTap, onSeek }: Props) {
   const barRef = useRef<HTMLDivElement>(null)
   const downXRef = useRef(0)
   const movedRef = useRef(false)
@@ -48,9 +49,10 @@ export function SegmentBar({ trimStart, trimEnd, moves, activeIndex, completed, 
     const up = (e: PointerEvent) => {
       setScrubbing(false)
       if (!movedRef.current) {
-        // No drag = a tap: jump to the segment under the pointer (skip the skipped ones).
+        // No drag = a tap: jump to the segment under the pointer. A tap in a deleted hole
+        // lands on no segment, so nothing happens — which is right, there is nothing there.
         const seg = segAt(timeAt(e.clientX))
-        if (seg && !skip.includes(seg.index)) onTap(seg.index)
+        if (seg) onTap(seg.index)
       }
     }
     window.addEventListener('pointermove', move)
@@ -73,34 +75,40 @@ export function SegmentBar({ trimStart, trimEnd, moves, activeIndex, completed, 
           const left = pct(m.startSec)
           const width = Math.max(0, pct(m.endSec) - left)
           const done = completed.includes(m.index)
-          const skipped = skip.includes(m.index)
           const active = m.index === activeIndex
           return (
             <div
               key={m.index}
-              title={`Segment ${m.index + 1}${skipped ? ' (skipped)' : done ? ' (done · tap to review again)' : ''}`}
+              title={`Segment ${m.index + 1}${done ? ' (done · tap to review again)' : ''}`}
               className={`pointer-events-none absolute bottom-0 top-0 flex items-center justify-center border-r border-paper/40 text-[11px] font-bold tabular-nums ${
-                skipped
-                  ? 'bg-ink/[0.02] text-ink/20 line-through'
-                  : done
-                    ? 'bg-ink/[0.03] text-ink/25'
-                    : active
-                      ? 'bg-brand/30 text-ink ring-2 ring-inset ring-brand'
-                      : 'bg-brand/10 text-ink/60'
+                done
+                  ? 'bg-ink/[0.03] text-ink/25'
+                  : active
+                    ? 'bg-brand/30 text-ink ring-2 ring-inset ring-brand'
+                    : 'bg-brand/10 text-ink/60'
               }`}
               style={{ left: `${left}%`, width: `${width}%` }}
             >
-              <span>{skipped ? '⊘' : done ? '✓' : m.index + 1}</span>
+              <span>{done ? '✓' : m.index + 1}</span>
             </div>
           )
         })}
+        {/* Deleted stretches: drawn as holes so the bar still reads as the real timeline. */}
+        {cuts.map(([cs, ce], i) => (
+          <div
+            key={`cut${i}`}
+            title="Deleted — playback jumps this"
+            className="pointer-events-none absolute bottom-0 top-0 z-[5] border-x border-bad/25 bg-[repeating-linear-gradient(45deg,rgba(0,0,0,0.05),rgba(0,0,0,0.05)_3px,transparent_3px,transparent_7px)]"
+            style={{ left: `${pct(cs)}%`, width: `${Math.max(0.4, pct(ce) - pct(cs))}%` }}
+          />
+        ))}
         {/* Playhead with a draggable knob (moved imperatively by the parent each frame) */}
         <div ref={playheadRef} className="pointer-events-none absolute bottom-0 top-0 z-20 w-0.5 bg-ink" style={{ left: '0%' }}>
           <div className="absolute -top-1 left-1/2 h-3 w-3 -translate-x-1/2 rounded-full bg-ink shadow-soft" />
         </div>
       </div>
       <div className="mt-1 flex justify-between px-0.5 text-[10px] uppercase tracking-wider text-ink/35">
-        <span>{completed.length} of {Math.max(0, moves.length - skip.length)} done{skip.length ? ` · ${skip.length} skipped` : ''}</span>
+        <span>{completed.length} of {moves.length} done</span>
         <span>tap a segment · drag to scrub</span>
       </div>
     </div>

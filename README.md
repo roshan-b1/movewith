@@ -31,13 +31,6 @@ Your take is recorded, so **🎬 Side by side** replays YOU next to the instruct
 same segment. Then **Proceed** moves on — your call, whatever the score — or Try again /
 Watch again.
 
-Built-in routines (which have no video) are performed by a **3D dance silhouette**
-(Just-Dance style): a glowing
-flat-color male dancer in everyday clothes on a rim-lit stage, driven frame-by-frame by
-the stored pose with a direction-exact solver (arms fold behind the head, bodies turn a
-full 360° — moves that off-the-shelf pose solvers clamp away), with head/neck tracking,
-shoulder shrugs, planted feet, and a real-time shadow.
-
 **Controls:** Play/Pause (or **Spacebar**), slow-mo (1× / 0.75× / 0.5×, pitch-preserved),
 **Mirror**, **Loop** the current 8-count, and a per-section restart. A live **8-count number**
 shows where you are in the phrase, and a hint nudges you to step into frame if the camera
@@ -68,10 +61,6 @@ Strict layers so any piece can change without breaking the rest:
 - `src/providers/` — `PoseProvider` interface + the MediaPipe implementation (swap point).
 - `src/engine/` — orchestration: reference extraction, the live `PracticeEngine`, and the
   `PlaybackController` (slow-mo / loop / mirror; the swap point for higher-quality audio).
-- `src/ui/avatar/` — the rigged 3D dancer: a Mixamo-rigged silhouette mannequin (three.js)
-  driven from stored landmarks by a custom direction-exact solver (every limb bone aligns
-  to its landmark bone vector through rest-pose-quaternion retargeting; hips/torso follow
-  a full orientation basis, so 360° turns work), with slerp smoothing between pose frames.
 - `src/storage/` — IndexedDB (tracks, video blobs, progress).
 - `src/state/` — Zustand session store.
 - `src/ui/` — React screens & components (no business logic).
@@ -86,12 +75,6 @@ Strict layers so any piece can change without breaking the rest:
 - 🎬 **Music video mode**: pick a dancer to follow in a music video (uses pick-a-character),
   mirror them through the whole song instead of section-by-section, then play your performance
   back to you. The full-song, perform-it experience on top of the learn-it loop.
-- ✅ **Just-Dance-style dancer** — shipped, and upgraded from the planned 2D sprite to a
-  full rigged **3D** male silhouette mannequin (three.js, Mixamo rig, custom
-  direction-exact solver) with head/neck tracking, shoulder mechanics, foot planting, a
-  ground clamp, and full-turn support, performing any routine from its stored landmarks
-  on a rim-lit stage with real shadows. Next: an avatar picker (multiple characters to
-  choose from), hand/finger detail.
 - 💃 **Built-in famous dances**: a library of well-known routines ready to learn out of the
   box (Macarena, etc.), not just user uploads.
 - ⏭️ **Auto-detect the dancing parts**: in a tutorial video, tell when the instructor is actually

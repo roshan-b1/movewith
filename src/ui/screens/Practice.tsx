@@ -14,16 +14,17 @@ import {
   buildMovesFromBounds,
   evenMoveBounds,
   autoMoveBounds,
+  normalizeCuts,
 } from '../../core/reference/segment'
 import { detectTalkingRanges, overlapFraction } from '../../core/reference/talking'
 import { captureDancerThumbs } from '../components/dancerThumbs'
 import { loopWrapAction } from '../../core/practice/loopWrap'
 import { sliceTakeBySegments } from '../../core/practice/takeSlice'
 import { comboSpan } from '../../core/practice/combo'
+import { pushEdit, undoEdit, redoEdit, emptyHistory, type EditHistory, type EditSnapshot } from '../../core/practice/history'
 import { VoiceController, type VoiceCommand } from '../../engine/voice'
 import { BeatMusic } from '../../engine/beatMusic'
 import { drawSkeleton, drawHumanFigure, worldProjector, containProjector, coverProjector } from '../components/drawSkeleton'
-import { InstructorAvatar, type AvatarStatus } from '../avatar/InstructorAvatar'
 import { AccuracyMeter } from '../components/AccuracyMeter'
 import { Scrubber } from '../components/Scrubber'
 import { MoveEditor } from '../components/MoveEditor'
@@ -31,11 +32,6 @@ import { SegmentBar } from '../components/SegmentBar'
 import type { ReferenceTrack } from '../../core/reference/types'
 
 const RATE_STEPS = [0.5, 0.75, 1]
-// The rigged 3D dancer isn't good enough to show anyone yet. The whole implementation
-// stays (InstructorAvatar, the .glb, the pose solver) — this just keeps it off screen
-// until it's ready. Flip to true to bring it back.
-const ENABLE_3D_AVATAR = false
-
 const LIMB_LABEL: Record<Limb, string> = {
   leftArm: 'Left arm', rightArm: 'Right arm', leftLeg: 'Left leg', rightLeg: 'Right leg', torso: 'Torso',
 }
@@ -158,7 +154,6 @@ export function Practice() {
   const [rating, setRating] = useState(false)
   const scoring = rating && !playbackOnly
   const [completed, setCompleted] = useState<number[]>([])
-  const [skip, setSkip] = useState<number[]>(savedSetup?.skip ?? [])
   const [countdown, setCountdown] = useState(0)
   const [countdownLabel, setCountdownLabel] = useState('Replaying in')
   const [editingTitle, setEditingTitle] = useState(false)
@@ -169,6 +164,22 @@ export function Practice() {
   const [trimEnd, setTrimEnd] = useState(savedSetup?.trimEnd ?? duration)
   // Internal cut times between segments. Restored from save, else placed by the user.
   const [moveBounds, setMoveBounds] = useState<number[]>(savedSetup?.moveBounds ?? [])
+  // Stretches the dancer DELETED. Deleting a part takes that time out of the routine for
+  // good — it is not merged into a neighbour — so these are real holes in the timeline.
+  const [cuts, setCuts] = useState<Array<[number, number]>>(() => {
+    const saved = savedSetup?.cuts
+    if (saved?.length) return saved.map((c) => [c[0], c[1]] as [number, number])
+    // Saved before deleting existed? Those setups stored skipped SEGMENT INDICES. Convert
+    // them once to the time ranges they stood for, so an old dance opens with the same
+    // parts gone and the dancer never notices the change.
+    const legacy = savedSetup?.skip
+    if (!legacy?.length) return []
+    return buildMovesFromBounds(savedSetup?.trimStart ?? 0, savedSetup?.trimEnd ?? duration, savedSetup?.moveBounds ?? [])
+      .filter((m) => legacy.includes(m.index))
+      .map((m) => [m.startSec, m.endSec] as [number, number])
+  })
+  // Undo/redo for the whole editor: cuts, boundary drags, deletes, restores and trims.
+  const [history, setHistory] = useState<EditHistory>(emptyHistory)
   const [moveIdx, setMoveIdx] = useState(0)
   const [fullRun, setFullRun] = useState(false)
   const [playing, setPlaying] = useState(false)
@@ -229,18 +240,17 @@ export function Practice() {
   const [replayProgress, setReplayProgress] = useState(0)
   /** The detailed run report (timestamps + what went wrong) is open. */
   const [showReport, setShowReport] = useState(false)
-  const [avatarStatus, setAvatarStatus] = useState<AvatarStatus>('loading')
   // Synthesized backing beat for generated routines (no video = no audio track of its own).
   const [musicOn, setMusicOn] = useState(true)
   const musicRef = useRef<BeatMusic | null>(null)
 
-  const moves = useMemo(() => buildMovesFromBounds(trimStart, trimEnd, moveBounds), [trimStart, trimEnd, moveBounds])
+  const moves = useMemo(() => buildMovesFromBounds(trimStart, trimEnd, moveBounds, cuts), [trimStart, trimEnd, moveBounds, cuts])
   const ticks = useMemo(() => moveTicks(moves), [moves])
 
   // Which segments are looping together right now (for the badge and the coaching line).
   const comboIndices = useMemo(
-    () => comboSpan(moves, skip, moveIdx, comboCount)?.indices ?? [moveIdx],
-    [moves, skip, moveIdx, comboCount],
+    () => comboSpan(moves, moveIdx, comboCount)?.indices ?? [moveIdx],
+    [moves, moveIdx, comboCount],
   )
 
   // Nobody picked yet: the rater can't start, but the chips stay freely toggleable so you
@@ -266,8 +276,6 @@ export function Practice() {
   const rootRef = useRef<HTMLDivElement>(null)
   /** Latest keyboard-shortcut handler (reassigned each render so it always sees fresh state). */
   const keyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {})
-  const avatarCanvasRef = useRef<HTMLCanvasElement>(null)
-  const avatarRef = useRef<InstructorAvatar | null>(null)
   // Driven imperatively from the playback tick so the whole screen doesn't re-render 60×/s.
   const scrubPlayheadRef = useRef<HTMLDivElement>(null)
   const moveEditorPlayheadRef = useRef<HTMLDivElement>(null)
@@ -286,7 +294,9 @@ export function Practice() {
   const creatingRef = useRef(false)
   const fullRunRef = useRef(false)
   const segmentBeforeFullRef = useRef(0)
-  const skipRef = useRef<number[]>(skip)
+  const cutsRef = useRef<Array<[number, number]>>(cuts)
+  const moveBoundsRef = useRef<number[]>(moveBounds)
+  const historyRef = useRef<EditHistory>(emptyHistory)
   const loopStartRef = useRef(0)
   const loopEndRef = useRef(duration)
   const cfgRef = useRef<ScoreConfig>(STRICT)
@@ -345,12 +355,12 @@ export function Practice() {
   }, [mirror])
   useEffect(() => void (phaseRef.current = phase), [phase])
   useEffect(() => { trimStartRef.current = trimStart; trimEndRef.current = trimEnd }, [trimStart, trimEnd])
-  // Keep skip state + the controller's skip ranges (for full-song playback) in sync.
+  // Deleted stretches are already gone from `moves`, but playback still runs on real video
+  // time — so the controller needs the ranges too, to jump them during a continuous run.
   useEffect(() => {
-    skipRef.current = skip
-    const ranges = moves.filter((m) => skip.includes(m.index)).map((m) => [m.startSec, m.endSec] as [number, number])
-    playbackRef.current?.setSkipRanges(ranges)
-  }, [skip, moves])
+    cutsRef.current = cuts
+    playbackRef.current?.setSkipRanges(cuts.map((c) => [c[0], c[1]] as [number, number]))
+  }, [cuts])
 
   // Persist the dancer's trim + segments + settings for this track (debounced) so they're
   // restored on next open. Skips the very first render (nothing changed yet).
@@ -360,10 +370,11 @@ export function Practice() {
     const id = window.setTimeout(() => {
       const cur = useSession.getState().progress
       const base = cur ?? { trackId: track.id, bestSectionScores: {}, unlockedThrough: 0 }
-      void updateProgress({ ...base, setup: { trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, skip } })
+      void updateProgress({ ...base, setup: { trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, cuts } })
     }, 500)
     return () => window.clearTimeout(id)
-  }, [trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, skip, track.id, updateProgress])
+  }, [trimStart, trimEnd, moveBounds, moveSec, reps, breakSecs, cuts, track.id, updateProgress])
+  useEffect(() => void (moveBoundsRef.current = moveBounds), [moveBounds])
   useEffect(() => void (creatingRef.current = creating), [creating])
   useEffect(() => void (movesRef.current = moves), [moves])
   useEffect(() => void (moveIdxRef.current = moveIdx), [moveIdx])
@@ -381,31 +392,6 @@ export function Practice() {
   // The 3D dancer performs ONLY our generated routines (no video of their own — the demo
   // and future built-in tutorials). Uploaded videos always show the real footage: the
   // dancer is the instructor for content we author, never a replacement for the video.
-  // If the model ever fails to load we quietly fall back to the classic 2D drawing.
-  const hasFrames = track.frames.length > 0
-  const showAvatar = ENABLE_3D_AVATAR && hasFrames && avatarStatus !== 'error' && !videoUrl && phase !== 'setup'
-
-  // 3D dancer lifecycle: create it when its canvas is on screen, tear down when hidden.
-  useEffect(() => {
-    if (!showAvatar) return
-    const canvas = avatarCanvasRef.current
-    if (!canvas) return
-    const inst = new InstructorAvatar(canvas, (s) => {
-      setAvatarStatus(s)
-      if (s === 'ready') {
-        // Push the current frame so the dancer strikes the right pose even while paused.
-        const pb = playbackRef.current
-        if (pb) pb.seek(pb.getTime())
-      }
-    })
-    // Camera-relative stage travel (walking toward camera / across frame) is measured
-    // against the whole routine's median body size — calibrate before frames stream in.
-    inst.calibrate(trackRef.current.frames)
-    avatarRef.current = inst
-    return () => { avatarRef.current = null; inst.dispose() }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showAvatar, track.id])
-
   // Playback + instructor draw loop
   useEffect(() => {
     const pb = new PlaybackController(duration)
@@ -417,8 +403,8 @@ export function Practice() {
       musicRef.current = new BeatMusic(pb, track.tempo.bpm, track.tempo.firstBeatSec)
     }
     pb.setLoop({ startSec: 0, endSec: duration })
-    // Seed skip ranges from restored state (the skip-sync effect runs before this on mount).
-    pb.setSkipRanges(movesRef.current.filter((m) => skipRef.current.includes(m.index)).map((m) => [m.startSec, m.endSec] as [number, number]))
+    // Seed the deleted ranges from restored state (the sync effect runs before this on mount).
+    pb.setSkipRanges(cutsRef.current.map((c) => [c[0], c[1]] as [number, number]))
     // Keep the play/pause button in sync with what the video actually does (autoplay
     // can be blocked, which would otherwise leave the button stuck showing "Pause").
     const unsubPlay = pb.onPlayingChange((p) => setPlaying(p))
@@ -430,15 +416,6 @@ export function Practice() {
       lastDrawMs = now
       const i = nearestFrameIndex(track.frames, t)
       const frame = (i >= 0 ? track.frames[i] : null) ?? null
-      // 3D dancer active: feed it the frame (mirror is a CSS flip on its canvas) and keep
-      // the 2D layers clean so nothing stale shows when toggling back.
-      const avatar = avatarRef.current
-      if (avatar) {
-        avatar.setFrame(frame)
-        const overlay = instructorOverlayRef.current
-        if (overlay) overlay.getContext('2d')?.clearRect(0, 0, overlay.width, overlay.height)
-        return
-      }
       if (videoUrl) {
         const canvas = instructorOverlayRef.current
         const video = instructorVideoRef.current
@@ -887,7 +864,7 @@ export function Practice() {
   }
 
   /** Dance the whole routine once, straight through, to the music. The parts you cut and
-   *  the bits you marked skip are honoured (playback jumps them), and the single take is
+   *  the parts you deleted are honoured (playback jumps them), and the single take is
    *  sliced up afterwards so you still get a part-by-part recap. */
   function startWholeDanceRun() {
     startRating(trimStartRef.current, trimEndRef.current, true)
@@ -915,7 +892,7 @@ export function Practice() {
 
     if (wholeRunRef.current) {
       wholeRunRef.current = false
-      const segs = movesRef.current.filter((m) => !skipRef.current.includes(m.index))
+      const segs = movesRef.current
       // Slice the ONE take by instructor time, so each part is scored from the pass the
       // dancer actually did in one go.
       const summaries = slotFramesRef.current.map((fr, k) => {
@@ -1081,6 +1058,12 @@ export function Practice() {
     clearCountdown()
     const total = seconds
     if (total <= 0) { after(); return }
+    // A 3-2-1 always means "hold still, then go", and every caller ends by playing again.
+    // So the stage is stopped HERE rather than trusting each caller to have done it: a
+    // play() still settling from a seek (↻ Repeat) used to keep rolling underneath the
+    // count, which read as the routine carrying on through its own countdown.
+    playbackRef.current?.pause()
+    setPlaying(false)
     setCountdownLabel(label)
     let n = total
     setCountdown(n)
@@ -1107,7 +1090,7 @@ export function Practice() {
 
   /** Segments currently looping together (just the one unless combo practice is on). */
   function currentCombo(idx: number) {
-    return comboSpan(movesRef.current, skipRef.current, idx, comboCountRef.current)
+    return comboSpan(movesRef.current, idx, comboCountRef.current)
   }
 
   function gotoMove(i: number, play = true) {
@@ -1172,10 +1155,10 @@ export function Practice() {
     const done = [...completedRef.current]
     for (const i of justDone) if (!done.includes(i)) done.push(i)
     setCompleted(done); completedRef.current = done
-    // Find the next segment that isn't done or skipped, starting after the current one.
+    // Find the next segment that isn't done, starting after the current one.
     const n = list.length
     let next = -1
-    for (let k = 1; k <= n; k++) { const j = (cur + k) % n; if (!done.includes(j) && !skipRef.current.includes(j)) { next = j; break } }
+    for (let k = 1; k <= n; k++) { const j = (cur + k) % n; if (!done.includes(j)) { next = j; break } }
     if (next === -1) {
       clearCountdown()
       playbackRef.current?.pause(); setPlaying(false)
@@ -1194,29 +1177,30 @@ export function Practice() {
     }
   }
   // (Re)detect the moves for a range. 'auto' cuts on distinct-movement changes and
-  // pre-skips talking/explaining stretches; 'even' spaces them evenly. Clears progress
+  // deletes talking/explaining stretches; 'even' spaces them evenly. Clears progress
   // since the moves changed.
   function segmentInto(s: number, e: number, mode: 'auto' | 'even') {
     const bounds = mode === 'auto'
       ? autoMoveBounds(trackRef.current.frames, s, e, moveSec, trackRef.current.tempo)
       : evenMoveBounds(s, e, moveSec)
+    recordEdit()
     setMoveBounds(bounds)
     setCompleted([]); completedRef.current = []
     // Auto-detect also spots where the instructor is talking rather than dancing (legs
-    // near-still for a sustained stretch) and pre-skips those segments. ⊘ undoes any.
-    let skipped: number[] = []
+    // near-still for a sustained stretch) and deletes those parts outright. ↺ or ⌘Z undoes.
+    let cut: Array<[number, number]> = []
     if (mode === 'auto' && trackRef.current.frames.length > 0) {
       const talk = detectTalkingRanges(trackRef.current.frames, s, e)
       if (talk.length > 0) {
-        skipped = buildMovesFromBounds(s, e, bounds)
+        cut = buildMovesFromBounds(s, e, bounds)
           .filter((m) => overlapFraction(talk, m.startSec, m.endSec) >= 0.6)
-          .map((m) => m.index)
+          .map((m) => [m.startSec, m.endSec] as [number, number])
       }
-      if (skipped.length > 0) {
-        flashToast(`⊘ Skipped ${skipped.length} talking ${skipped.length === 1 ? 'part' : 'parts'} · tap ⊘ to undo`)
+      if (cut.length > 0) {
+        flashToast(`✕ Removed ${cut.length} talking ${cut.length === 1 ? 'part' : 'parts'} · tap ↺ or ⌘Z to undo`)
       }
     }
-    setSkip(skipped)
+    setCuts(normalizeCuts(cut, s, e))
     setMoveIdx(0); moveIdxRef.current = 0
     setPreviewIdx(-1)
   }
@@ -1234,8 +1218,9 @@ export function Practice() {
   function startCreator() {
     clearCountdown()
     setPreviewIdx(-1)
+    recordEdit()
     setMoveBounds([])
-    setCompleted([]); completedRef.current = []; setSkip([])
+    setCompleted([]); completedRef.current = []
     setCreating(true)
     setLoopRegion(trimStart, trimEnd)
     playbackRef.current?.play()
@@ -1244,62 +1229,124 @@ export function Practice() {
     const t = playbackRef.current?.getTime() ?? trimStart
     if (t <= trimStart + 0.2 || t >= trimEnd - 0.2) return
     if (movesRef.current.some((m) => Math.abs(m.startSec - t) < 0.25)) return
-    setMoveBounds([...movesRef.current.slice(1).map((m) => m.startSec), t].sort((a, b) => a - b))
-    setSkip([])
+    recordEdit()
+    // Add to the BOUNDS, not to the segment starts — a segment start next to a deleted
+    // hole is the far edge of that hole, which was never a cut point.
+    setMoveBounds((bs) => [...bs, t].sort((a, b) => a - b))
   }
   function onTrimChange(s: number, e: number) {
     setTrimStart(s); setTrimEnd(e)
+    // Deletions live in real video time, so trimming just clips them to the new range.
+    setCuts((c) => normalizeCuts(c, s, e))
     // In the creator, leave the segments to the user — just keep their cuts that still fall
     // inside the new range. Otherwise re-detect to match the new range.
     if (creatingRef.current) {
       setMoveBounds((bounds) => bounds.filter((b) => b > s + 0.05 && b < e - 0.05))
-      setPreviewIdx(-1); setSkip([])
+      setPreviewIdx(-1)
       return
     }
     segmentInto(s, e, 'auto')
     window.setTimeout(() => gotoMove(0, phase === 'go'), 0)
   }
 
-  // ---- Move editor handlers (used on the bounds step) ----
-  function editorMoveBound(moveIndex: number, t: number) {
-    // Replace the (moveIndex-1)-th internal cut with the dragged time, then re-sort.
-    const cuts = movesRef.current.slice(1).map((m) => m.startSec)
-    if (moveIndex - 1 < 0 || moveIndex - 1 >= cuts.length) return
-    cuts[moveIndex - 1] = t
-    setMoveBounds(cuts.slice().sort((a, b) => a - b))
+  // ---- Undo / redo (the bounds step) ----
+  /** The editable state exactly as it stands now. */
+  function currentEdit(): EditSnapshot {
+    return {
+      trimStart: trimStartRef.current,
+      trimEnd: trimEndRef.current,
+      moveBounds: [...moveBoundsRef.current],
+      cuts: cutsRef.current.map((c) => [c[0], c[1]] as [number, number]),
+    }
   }
-  function editorRemoveBound(moveIndex: number) {
-    const cuts = movesRef.current.slice(1).map((m) => m.startSec)
-    cuts.splice(moveIndex - 1, 1)
-    setMoveBounds(cuts)
-    setCompleted([]); completedRef.current = []; setSkip([])
+  /** Record the state BEFORE an edit. Every editor action calls this first. */
+  function recordEdit() {
+    const h = pushEdit(historyRef.current, currentEdit())
+    historyRef.current = h
+    setHistory(h)
   }
-  // Delete a segment: drop the boundary that makes it distinct so its time merges into a
-  // neighbour (the first segment merges into the next, others into the previous).
-  function deleteSegment(moveIndex: number) {
-    if (movesRef.current.length <= 1) return
-    editorRemoveBound(moveIndex === 0 ? 1 : moveIndex)
+  function applyEdit(st: EditSnapshot) {
+    setTrimStart(st.trimStart); setTrimEnd(st.trimEnd)
+    trimStartRef.current = st.trimStart; trimEndRef.current = st.trimEnd
+    setMoveBounds([...st.moveBounds])
+    setCuts(st.cuts.map((c) => [c[0], c[1]] as [number, number]))
+    // Segment numbering moves under your feet on an undo, so the ✓ marks can't survive it.
+    setCompleted([]); completedRef.current = []
     setPreviewIdx(-1)
   }
-  // Skip/cut a segment out of practice (e.g. the instructor's explanation parts).
-  function toggleSkip(i: number) {
-    setSkip((s) => (s.includes(i) ? s.filter((x) => x !== i) : [...s, i]))
+  function undoLastEdit() {
+    const r = undoEdit(historyRef.current, currentEdit())
+    if (!r) return
+    historyRef.current = r.history
+    setHistory(r.history)
+    applyEdit(r.state)
   }
-  // Next non-skipped segment index in a direction (wraps).
+  function redoLastEdit() {
+    const r = redoEdit(historyRef.current, currentEdit())
+    if (!r) return
+    historyRef.current = r.history
+    setHistory(r.history)
+    applyEdit(r.state)
+  }
+
+  // ---- Move editor handlers (used on the bounds step) ----
+  /** Move the divider currently at `fromSec` to `toSec`. Matched by value, because a
+   *  segment's index no longer lines up with a position in the bounds list once a part
+   *  has been deleted. One undo step per drag: recorded on pointerdown, not per frame. */
+  function editorMoveBound(fromSec: number, toSec: number) {
+    setMoveBounds((bs) => {
+      let best = -1
+      let bestD = Infinity
+      bs.forEach((b, i) => { const d = Math.abs(b - fromSec); if (d < bestD) { bestD = d; best = i } })
+      if (best < 0 || bestD > 0.25) return bs
+      const next = bs.slice()
+      next[best] = toSec
+      return next.sort((a, b) => a - b)
+    })
+  }
+  /** Double-click a divider: remove it, joining the two segments. No time is lost. */
+  function editorRemoveBound(atSec: number) {
+    recordEdit()
+    setMoveBounds((bs) => bs.filter((b) => Math.abs(b - atSec) > 0.25))
+    setCompleted([]); completedRef.current = []
+    setPreviewIdx(-1)
+  }
+  /** Delete a part: cut that stretch OUT of the routine. It stops being practised and
+   *  playback jumps straight over it — including when it sits in the middle. */
+  function deleteSegment(moveIndex: number) {
+    const list = movesRef.current
+    if (list.length <= 1) return
+    const m = list.find((x) => x.index === moveIndex)
+    if (!m) return
+    recordEdit()
+    setCuts(normalizeCuts([...cutsRef.current, [m.startSec, m.endSec]], trimStartRef.current, trimEndRef.current))
+    setCompleted([]); completedRef.current = []
+    setPreviewIdx(-1)
+    flashToast(`✕ Removed ${(m.endSec - m.startSec).toFixed(1)}s · ↺ or ⌘Z to undo`)
+  }
+  /** Put a deleted stretch back where it was. */
+  function restoreCut(cutIndex: number) {
+    const cur = cutsRef.current
+    if (!cur[cutIndex]) return
+    recordEdit()
+    setCuts(cur.filter((_, i) => i !== cutIndex))
+    setCompleted([]); completedRef.current = []
+    setPreviewIdx(-1)
+  }
+  // Next segment index in a direction (wraps). Deleted parts aren't in the list at all,
+  // so stepping forward from the move before a hole lands on the one after it.
   function nextOpen(from: number, dir: 1 | -1): number {
     const n = movesRef.current.length
-    for (let k = 1; k <= n; k++) {
-      const j = (((from + dir * k) % n) + n) % n
-      if (!skipRef.current.includes(j)) return j
-    }
-    return from
+    if (n <= 0) return from
+    return (((from + dir) % n) + n) % n
   }
   function splitAtPlayhead() {
     const t = playbackRef.current?.getTime() ?? trimStart
     if (t <= trimStart + 0.2 || t >= trimEnd - 0.2) { flashToast('Move the playhead into the range first'); return }
     if (movesRef.current.some((m) => Math.abs(m.startSec - t) < 0.2)) { flashToast('Too close to a divider'); return }
-    setMoveBounds([...movesRef.current.slice(1).map((m) => m.startSec), t].sort((a, b) => a - b))
-    setCompleted([]); completedRef.current = []; setSkip([])
+    recordEdit()
+    setMoveBounds((bs) => [...bs, t].sort((a, b) => a - b))
+    setCompleted([]); completedRef.current = []
   }
   function playAll() {
     const pb = playbackRef.current
@@ -1509,8 +1556,8 @@ export function Practice() {
   function beginPractice() {
     setPhase('go')
     playbackRef.current?.pause(); setPlaying(false)
-    // Set up the first non-skipped segment but don't play yet — "Get ready" countdown first.
-    const first = skipRef.current.includes(0) ? nextOpen(0, 1) : 0
+    // Set up the first segment but don't play yet — "Get ready" countdown first.
+    const first = 0
     window.setTimeout(() => {
       gotoMove(first, false)
       runCountdown(() => {
@@ -1620,12 +1667,31 @@ export function Practice() {
 
   // Reassigned each render so the once-bound keydown listener always runs fresh handlers.
   keyHandlerRef.current = (e: KeyboardEvent) => {
+    const typing = (() => {
+      const el = document.activeElement as HTMLElement | null
+      return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')
+    })()
+    // Undo/redo on the segment-editing step. Checked before the bare-key shortcuts below
+    // because these ARE chords, and before the phase gate because editing happens in
+    // 'bounds', not 'go'.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === 'z' || e.key === 'Z') && !typing) {
+      if (phaseRef.current !== 'bounds') return
+      e.preventDefault()
+      if (e.shiftKey) redoLastEdit()
+      else undoLastEdit()
+      return
+    }
+    // Redo also answers to the Windows/Linux habit of Ctrl+Y.
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'y' || e.key === 'Y') && !typing) {
+      if (phaseRef.current !== 'bounds') return
+      e.preventDefault(); redoLastEdit(); return
+    }
     if (phaseRef.current !== 'go') return
     // Let real browser chords through (Ctrl/Cmd+R reload, Cmd+M, etc.) — our shortcuts are all
     // bare keys, so a modifier means the user wants the browser's binding, not ours.
     if (e.ctrlKey || e.metaKey || e.altKey) return
     const active = document.activeElement as HTMLElement | null
-    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return
+    if (typing) return
     // F11 → our stage fullscreen (override the browser's own window fullscreen).
     if (e.key === 'F11') { if (canFs || isFs) { e.preventDefault(); toggleFullscreen() } return }
     const onControl = !!active && (active.tagName === 'BUTTON' || active.tagName === 'A')
@@ -1791,32 +1857,10 @@ export function Practice() {
               />
             </>
           ) : (
-            !showAvatar && (
-              <canvas
-                ref={instructorCanvasRef}
-                className="absolute inset-0 h-full w-full"
-              />
-            )
-          )}
-          {/* Rigged 3D dancer. Sits above the video (which keeps playing for the music) on
-              an opaque stage backdrop. Mirror is a CSS flip of the WebGL canvas. */}
-          {showAvatar && (
-            <div
-              className="absolute inset-0 z-10"
-              style={{ background: 'radial-gradient(ellipse at 50% 42%, #353b58 0%, #171a28 62%, #0c0e18 100%)' }}
-            >
-              <canvas
-                ref={avatarCanvasRef}
-                className="h-full w-full"
-                style={{ transform: mirror ? 'scaleX(-1)' : undefined }}
-              />
-              {avatarStatus === 'loading' && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
-                  <div className="h-7 w-7 animate-spin rounded-full border-2 border-cream/25 border-t-cream" />
-                  <p className="text-xs text-cream/60">Loading your dancer…</p>
-                </div>
-              )}
-            </div>
+            <canvas
+              ref={instructorCanvasRef}
+              className="absolute inset-0 h-full w-full"
+            />
           )}
         </div>
         {/* YOUR CAMERA — fullscreen while the rater scores you; the RIGHT HALF (beside the
@@ -1974,7 +2018,7 @@ export function Practice() {
               </button>
               <p className="mt-4 mb-2 text-xs font-medium uppercase tracking-wider text-ink/45">Or drill just one part</p>
               <div className="flex flex-wrap gap-2">
-                {moves.filter((m) => !skip.includes(m.index)).map((m) => (
+                {moves.map((m) => (
                   <button
                     key={m.index}
                     onClick={() => startRating(m.startSec, m.endSec)}
@@ -2343,14 +2387,14 @@ export function Practice() {
           moves={moves}
           activeIndex={moveIdx}
           completed={completed}
-          skip={skip}
+          cuts={cuts}
           playheadRef={moveEditorPlayheadRef}
           onTap={reviewSegment}
           onSeek={seekTo}
         />
         )
       ) : (
-        <Scrubber duration={duration} currentTime={0} rangeStart={trimStart} rangeEnd={trimEnd} sections={ticks} onSeek={seekTo} onRangeChange={onTrimChange} playheadRef={scrubPlayheadRef} />
+        <Scrubber duration={duration} currentTime={0} rangeStart={trimStart} rangeEnd={trimEnd} sections={ticks} onSeek={seekTo} onRangeChange={onTrimChange} onRangeDragStart={recordEdit} playheadRef={scrubPlayheadRef} />
       )}
 
       {!inGo ? (
@@ -2364,7 +2408,7 @@ export function Practice() {
                 order. (First trim the part you want with the handles above, or tap ↻ Auto-detect.)
               </>
             ) : (
-              <>Fine-tune your segments: tap to play, <b className="text-ink/80">⊘ to skip</b> a part (like an explanation), ✕ to delete, drag a divider to move it.</>
+              <>Fine-tune your segments: tap to play, <b className="text-ink/80">✕ to delete</b> a part (it comes out of the routine for good), <b className="text-ink/80">↺</b> to put one back, drag a divider to move it, double-click one to join two segments. <b className="text-ink/80">⌘Z</b> undoes.</>
             )}
           </p>
 
@@ -2373,8 +2417,27 @@ export function Practice() {
             <div className="mb-2 flex items-center gap-2">
               <span className="font-display text-sm font-semibold">{creating ? '✂ Create your segments' : '✎ Segment editor'}</span>
               <span className="text-xs text-ink/50">
-                {creating ? 'one ✂ Cut at the end of each move' : 'tap to play · ⊘ skip · ✕ delete · drag dividers'}
+                {creating ? 'one ✂ Cut at the end of each move' : 'tap to play · ✕ delete · drag dividers'}
               </span>
+              {/* Undo/redo for everything on this step — cuts, drags, deletes, trims. */}
+              <div className="ml-auto flex items-center gap-1">
+                <button
+                  onClick={undoLastEdit}
+                  disabled={history.past.length === 0}
+                  title="Undo (⌘Z)"
+                  className="rounded-lg border border-line bg-ink/[0.06] px-2.5 py-1 text-xs font-semibold text-ink/70 transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  ↶ Undo
+                </button>
+                <button
+                  onClick={redoLastEdit}
+                  disabled={history.future.length === 0}
+                  title="Redo (⇧⌘Z)"
+                  className="rounded-lg border border-line bg-ink/[0.06] px-2.5 py-1 text-xs font-semibold text-ink/70 transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  ↷ Redo
+                </button>
+              </div>
             </div>
             <MoveEditor
               trimStart={trimStart}
@@ -2383,11 +2446,13 @@ export function Practice() {
               activeIndex={previewIdx}
               playheadRef={moveEditorPlayheadRef}
               creating={creating}
-              skip={skip}
+              cuts={cuts}
               onPlaySegment={previewSegment}
+              onBoundDragStart={recordEdit}
               onMoveBound={editorMoveBound}
+              onRemoveBound={editorRemoveBound}
               onDeleteSegment={deleteSegment}
-              onToggleSkip={toggleSkip}
+              onRestoreCut={restoreCut}
             />
           </div>
 
@@ -2476,7 +2541,7 @@ export function Practice() {
 
           {/* Finished every segment → put it together in one full pass before the camera
               ever comes on. Test my skills stays reachable for anyone who'd rather skip. */}
-          {moves.length > 0 && completed.length >= moves.length - skip.length && (
+          {moves.length > 0 && completed.length >= moves.length && (
             <div className="flex flex-col items-center gap-2 rounded-2xl border border-brand2/40 bg-brand2/[0.08] px-4 py-3 text-center">
               <p className="text-sm font-semibold text-ink">You got every segment 🎉</p>
               <p className="text-xs text-ink/55">

@@ -13,6 +13,8 @@ interface Props {
   sections: Section[]
   onSeek: (t: number) => void
   onRangeChange: (start: number, end: number) => void
+  /** A trim-handle drag started — the parent records one undo step for the whole gesture. */
+  onRangeDragStart?: () => void
   /** Optional ref to the playhead element so the parent can move it imperatively each
    *  frame (avoids re-rendering on every tick). */
   playheadRef?: React.Ref<HTMLDivElement>
@@ -24,7 +26,7 @@ function fmt(t: number): string {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-export function Scrubber({ duration, currentTime, rangeStart, rangeEnd, sections, onSeek, onRangeChange, playheadRef }: Props) {
+export function Scrubber({ duration, currentTime, rangeStart, rangeEnd, sections, onSeek, onRangeChange, onRangeDragStart, playheadRef }: Props) {
   const barRef = useRef<HTMLDivElement>(null)
   const [drag, setDrag] = useState<null | 'start' | 'end' | 'seek'>(null)
 
@@ -82,6 +84,7 @@ export function Scrubber({ duration, currentTime, rangeStart, rangeEnd, sections
             key={which}
             onPointerDown={(e) => {
               e.stopPropagation()
+              onRangeDragStart?.()
               setDrag(which)
             }}
             title={which === 'start' ? 'Trim start' : 'Trim end'}

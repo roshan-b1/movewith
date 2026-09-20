@@ -18,6 +18,12 @@ export interface Move {
   /** 0-based position within its section (0, 1, 2). */
   indexInSection: number
 }
+
+/** A stretch of the routine the dancer deleted — it is gone from practice and playback. */
+export type CutRange = readonly [number, number]
+
+/** Anything shorter than this is a rounding sliver, not a segment worth keeping. */
+const MIN_PIECE = 0.05
 export interface DanceSection {
   index: number
   startSec: number
@@ -25,20 +31,75 @@ export interface DanceSection {
   moves: Move[]
 }
 
-/** Build the move list from a range plus its internal cut times. */
-export function buildMovesFromBounds(start: number, end: number, bounds: number[]): Move[] {
-  const cuts = [start, ...bounds.filter((b) => b > start + 0.05 && b < end - 0.05).sort((a, b) => a - b), end]
-  const out: Move[] = []
-  for (let i = 0; i < cuts.length - 1; i++) {
-    out.push({
-      index: i,
-      startSec: cuts[i]!,
-      endSec: cuts[i + 1]!,
-      sectionIndex: Math.floor(i / MOVES_PER_SECTION),
-      indexInSection: i % MOVES_PER_SECTION,
-    })
+/**
+ * Tidy a set of deleted ranges: clip them to the trimmed range, drop slivers, and merge
+ * any that touch or overlap, so two deletes either side of a divider read as one hole.
+ */
+export function normalizeCuts(cuts: readonly CutRange[], start: number, end: number): Array<[number, number]> {
+  const clipped: Array<[number, number]> = []
+  for (const [a, b] of cuts) {
+    const s = Math.max(start, Math.min(a, b))
+    const e = Math.min(end, Math.max(a, b))
+    if (e - s > MIN_PIECE) clipped.push([s, e])
   }
-  return out.length ? out : [{ index: 0, startSec: start, endSec: end, sectionIndex: 0, indexInSection: 0 }]
+  clipped.sort((x, y) => x[0] - y[0])
+  const merged: Array<[number, number]> = []
+  for (const r of clipped) {
+    const last = merged[merged.length - 1]
+    if (last && r[0] <= last[1] + MIN_PIECE) last[1] = Math.max(last[1], r[1])
+    else merged.push([r[0], r[1]])
+  }
+  return merged
+}
+
+/**
+ * What is left of [a, b] once the deleted ranges are taken out of it. A cut through the
+ * middle leaves TWO pieces — that is the whole point: the footage in the hole is gone, and
+ * what sat either side of it stays.
+ */
+export function keptPieces(a: number, b: number, cuts: readonly CutRange[]): Array<[number, number]> {
+  let pieces: Array<[number, number]> = [[a, b]]
+  for (const [s, e] of cuts) {
+    const next: Array<[number, number]> = []
+    for (const [p, q] of pieces) {
+      if (e <= p || s >= q) { next.push([p, q]); continue } // the cut misses this piece
+      if (s > p) next.push([p, Math.min(s, q)])
+      if (e < q) next.push([Math.max(e, p), q])
+    }
+    pieces = next
+  }
+  return pieces.filter(([p, q]) => q - p > MIN_PIECE)
+}
+
+/**
+ * Build the move list from a range, its internal cut times, and the stretches the dancer
+ * deleted. Deleted time is not merged into a neighbour — it is removed, so the moves either
+ * side of a hole stay separate and the routine simply has nothing there.
+ */
+export function buildMovesFromBounds(start: number, end: number, bounds: number[], cuts: readonly CutRange[] = []): Move[] {
+  const edges = [start, ...bounds.filter((b) => b > start + 0.05 && b < end - 0.05).sort((a, b) => a - b), end]
+  const removed = normalizeCuts(cuts, start, end)
+  const out: Move[] = []
+  for (let i = 0; i < edges.length - 1; i++) {
+    for (const [p, q] of keptPieces(edges[i]!, edges[i + 1]!, removed)) {
+      out.push({
+        index: out.length,
+        startSec: p,
+        endSec: q,
+        sectionIndex: 0,
+        indexInSection: 0,
+      })
+    }
+  }
+  // Sections follow the FINAL numbering, so deleting a part renumbers everything after it.
+  for (const m of out) {
+    m.sectionIndex = Math.floor(m.index / MOVES_PER_SECTION)
+    m.indexInSection = m.index % MOVES_PER_SECTION
+  }
+  if (out.length) return out
+  // No cuts placed and nothing deleted: the whole range is one move. If the dancer deleted
+  // everything, an empty list is the honest answer — don't resurrect the footage.
+  return removed.length ? [] : [{ index: 0, startSec: start, endSec: end, sectionIndex: 0, indexInSection: 0 }]
 }
 
 /** Group an ordered move list into sections of MOVES_PER_SECTION. */

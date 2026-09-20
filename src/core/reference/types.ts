@@ -60,7 +60,12 @@ export interface PracticeSetup {
   /** Reps per segment; Infinity = loop till they move on. */
   reps?: number
   breakSecs?: number
-  /** Segment indices skipped in practice (e.g. the instructor's explanation parts). */
+  /** Stretches deleted out of the routine (e.g. the instructor's explanation parts).
+   *  Deleted time is gone from practice AND from playback — it is not merged into a
+   *  neighbouring segment. */
+  cuts?: Array<[number, number]>
+  /** @deprecated Pre-delete saves stored skipped SEGMENT INDICES. Read once on load and
+   *  converted to `cuts`; never written again. */
   skip?: number[]
 }
 
